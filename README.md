@@ -2,6 +2,8 @@
 
 Accept **crypto payments** in [FOSSBilling](https://fossbilling.org) using [Blockonomics](https://www.blockonomics.co) — non-custodial, paid directly to your own wallet. No KYC, ~1% fee. Currently supports Bitcoin (BTC) and Tether (USDT, ERC-20).
 
+Pending : BCH Support
+
 ## Features
 
 - **BTC**: a fresh address per invoice, shown on-page with a QR code. Payments are detected live over a websocket and the invoice is marked paid automatically after your configured number of confirmations.
