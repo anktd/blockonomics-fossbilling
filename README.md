@@ -2,14 +2,11 @@
 
 Accept **crypto payments** in [FOSSBilling](https://fossbilling.org) using [Blockonomics](https://www.blockonomics.co) — non-custodial, paid directly to your own wallet. No KYC, ~1% fee. Currently supports Bitcoin (BTC) and Tether (USDT, ERC-20).
 
-Pending : BCH Support
-
 ## Features
 
-- **BTC**: a fresh address per invoice, shown on-page with a QR code. Payments are detected live over a websocket and the invoice is marked paid automatically after your configured number of confirmations.
+- **BTC**: a fresh address per invoice, shown on-page with a QR code. Payments are detected live over a websocket and the invoice is marked paid automatically after 2 confirmations.
 - **USDT (ERC-20)**: wallet-connect checkout powered by Blockonomics' payment widget — the buyer connects their wallet and pays; no transaction hashes to copy around.
 - One gateway, the buyer picks the coin at checkout.
-- Configurable confirmations, underpayment tolerance and price margin.
 - Safe by default: callbacks are authenticated with a secret, amounts are validated server-side, and duplicate callbacks can never double-credit an invoice.
 - Full test mode: enable *Test Mode* on your Blockonomics store and the entire flow — including USDT wallet payments — runs with simulated coins.
 
@@ -36,7 +33,7 @@ The gateway ships with a small companion module (the public endpoints that recei
 ## Configuration
 
 1. Open the Blockonomics gateway settings in your FOSSBilling admin panel (**System → Payment gateways → Blockonomics**).
-2. **API Key** — create one in your [Blockonomics dashboard](https://www.blockonomics.co) under **Merchants → API Keys** and paste it here.
+2. **API Key** — get it from your [Blockonomics dashboard](https://www.blockonomics.co) under **Merchants (Dashboard) → Stores** and paste it here.
 3. **Callback Secret** — enter a long random string (e.g. from a password generator).
 4. Save the settings.
 5. In your Blockonomics dashboard, open your store's settings and set the **HTTP Callback URL** to exactly:
@@ -46,8 +43,7 @@ The gateway ships with a small companion module (the public endpoints that recei
    ```
 
    using the same secret you entered in step 3. Blockonomics matches this URL exactly, so this step is required.
-6. Optionally tune **Required confirmations** (2 recommended for BTC), **Underpayment tolerance** and **Margin**.
-7. Enable the gateway — done.
+6. Enable the gateway — done.
 
 ## Testing
 
@@ -57,7 +53,7 @@ Enable **Test Mode** on your Blockonomics store. BTC checkouts then issue test a
 
 - At checkout the buyer picks BTC or USDT. The adapter fetches a receive address and the live exchange rate from the Blockonomics API and shows the payment screen on your invoice page — the buyer is never redirected off-site.
 - Blockonomics sends a callback to your FOSSBilling instance for every status change of the payment. The extension validates the secret and the paid amount, tracks confirmations, and marks the invoice paid through FOSSBilling's standard transaction pipeline.
-- Underpayments within your configured tolerance count as full payment; anything below that is credited as a partial payment and the invoice stays unpaid.
+- A payment that matches (or exceeds) the requested amount marks the invoice paid; any shortfall is credited as a partial payment and the invoice stays unpaid until the balance is covered.
 
 ## Licensing
 

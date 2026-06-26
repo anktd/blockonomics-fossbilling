@@ -28,6 +28,9 @@ class Payment_Adapter_Blockonomics implements FOSSBilling\InjectionAwareInterfac
     /** Coins this gateway offers the buyer. */
     private const array SUPPORTED = ['BTC', 'USDT'];
 
+    /** Confirmations required before an invoice is marked paid (fixed at 2). */
+    private const int CONFIRMATIONS = 2;
+
     /** Blockonomics' marker txid for dashboard-generated test callbacks (no real BTC). */
     private const string TEST_TXID = 'WarningThisIsAGeneratedTestPaymentAndNotARealBitcoinTransaction';
 
@@ -56,7 +59,6 @@ class Payment_Adapter_Blockonomics implements FOSSBilling\InjectionAwareInterfac
         return [
             'supports_one_time_payments' => true,
             'supports_subscriptions' => false,
-            'description' => "Accept crypto payments — currently Bitcoin (BTC) and Tether (USDT, ERC-20) — directly to your own wallet via Blockonomics. Non-custodial, no KYC, ~1% fee. The buyer picks the coin at checkout.\n\n**Setup:** 1) Paste your Blockonomics API key and a random Callback Secret below and save. 2) In Blockonomics (Merchants → your store → HTTP Callback), register this exact URL: `https://YOUR-FOSSBILLING-DOMAIN/api/guest/blockonomics/callback?secret=YOUR-CALLBACK-SECRET` (use the same secret you entered below). Blockonomics requires the callback URL to exactly match a store, so this step is required.",
             'logo' => [
                 'logo' => 'blockonomics.png',
                 'height' => '30px',
@@ -66,37 +68,13 @@ class Payment_Adapter_Blockonomics implements FOSSBilling\InjectionAwareInterfac
                 'api_key' => [
                     'text', [
                         'label' => 'Blockonomics API Key',
-                        'description' => 'Create one at Blockonomics → Merchants → API Keys.',
+                        'description' => 'Get from Blockonomics → Merchants (Dashboard) → Stores.',
                     ],
                 ],
                 'callback_secret' => [
                     'text', [
                         'label' => 'Callback Secret',
-                        'description' => 'A long random string (e.g. from a password generator) used to authenticate Blockonomics callbacks. Include it in the callback URL you register with Blockonomics (see above).',
-                    ],
-                ],
-                'confirmations' => [
-                    'select', [
-                        'label' => 'Required confirmations before an invoice is marked paid',
-                        'multiOptions' => [
-                            '0' => '0 — instant (0-conf / mempool)',
-                            '1' => '1 confirmation',
-                            '2' => '2 confirmations (recommended)',
-                        ],
-                    ],
-                ],
-                'underpayment_slack' => [
-                    'text', [
-                        'label' => 'Underpayment tolerance (%)',
-                        'description' => 'Payments up to this percentage below the expected amount are still accepted as full payment. Default 0.',
-                        'required' => false,
-                    ],
-                ],
-                'margin' => [
-                    'text', [
-                        'label' => 'Margin (%)',
-                        'description' => 'Optional buffer added to the requested crypto amount to absorb price volatility between invoice display and payment. Default 0.',
-                        'required' => false,
+                        'description' => 'A long random string (e.g. from a password generator) used to authenticate Blockonomics callbacks. Include it in the callback URL you register with Blockonomics.',
                     ],
                 ],
             ],
@@ -117,6 +95,7 @@ class Payment_Adapter_Blockonomics implements FOSSBilling\InjectionAwareInterfac
         $hashJson = json_encode((string) $invoice->hash);
         $invoiceUrlJson = json_encode($this->di['tools']->url('invoice/' . $invoice->hash));
         $assetsJson = json_encode(SYSTEM_URL . 'modules/Blockonomics/assets');
+        $apiBaseJson = json_encode(SYSTEM_URL . 'api/guest/blockonomics/');
 
         return <<<HTML
 <div class="blockonomics-pay" style="max-width:480px;margin:0 auto;text-align:center">
@@ -137,6 +116,7 @@ class Payment_Adapter_Blockonomics implements FOSSBilling\InjectionAwareInterfac
         var INVOICE_HASH = {$hashJson};
         var INVOICE_URL = {$invoiceUrlJson};
         var ASSETS = {$assetsJson};
+        var API_BASE = {$apiBaseJson};
         var view = document.getElementById('blk-view');
         var loading = document.getElementById('blk-loading');
         var errEl = document.getElementById('blk-error');
@@ -162,7 +142,7 @@ class Payment_Adapter_Blockonomics implements FOSSBilling\InjectionAwareInterfac
         }
 
         function post(endpoint, body) {
-            return fetch('/api/guest/blockonomics/' + endpoint, {
+            return fetch(API_BASE + endpoint, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
                 body: JSON.stringify(body)
@@ -234,7 +214,7 @@ HTML;
         $this->ensureSchema();
         $invoiceService = $this->di['mod_service']('Invoice');
         $gatewayId = $this->resolveGatewayId();
-        $confirmations = (int) ($this->config['confirmations'] ?? 2);
+        $confirmations = self::CONFIRMATIONS;
         $fiatTotal = $invoiceService->getTotalWithTax($invoice);
 
         // Reuse a not-yet-confirmed order for this invoice + coin so a refresh doesn't burn a
@@ -320,7 +300,7 @@ HTML;
         $tx = $this->di['db']->getExistingModelById('Transaction', $id);
         $invoice = $this->di['db']->getExistingModelById('Invoice', $order->invoice_id);
         $invoiceService = $this->di['mod_service']('Invoice');
-        $confirmations = (int) ($this->config['confirmations'] ?? 2);
+        $confirmations = self::CONFIRMATIONS;
         $expectedSatoshi = (int) $order->expected_satoshi;
 
         // Record what this callback reported on the order row.
@@ -344,10 +324,9 @@ HTML;
             return;
         }
 
-        // 4. Underpayment handling: within tolerance ⇒ count as full; otherwise credit the
-        //    actual amount received (so partial payments record a partial credit, not full).
-        $slackSatoshi = (float) ($this->config['underpayment_slack'] ?? 0) / 100 * $expectedSatoshi;
-        if ($value < $expectedSatoshi - $slackSatoshi || $value > $expectedSatoshi) {
+        // 4. Payment-amount handling: an exact (or greater) payment counts as full; any
+        //    shortfall is credited as the actual amount received (a partial credit, not full).
+        if ($value !== $expectedSatoshi) {
             $satoshiPaid = $value;
         } else {
             $satoshiPaid = $expectedSatoshi;
@@ -639,16 +618,10 @@ HTML;
     }
 
     /**
-     * Apply the optional merchant margin and convert a fiat amount to the crypto's smallest
-     * units (satoshis for BTC, 1e-6 for USDT). A positive margin lowers the effective price.
+     * Convert a fiat amount to the crypto's smallest units (satoshis for BTC, 1e-6 for USDT).
      */
     private function convertFiatToUnits(float $fiat, float $price, string $crypto): int
     {
-        $margin = (float) ($this->config['margin'] ?? 0);
-        if ($margin > 0) {
-            $price = $price * 100 / (100 + $margin);
-        }
-
         return (int) (10 ** $this->getDecimals($crypto) * $fiat / $price);
     }
 
