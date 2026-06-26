@@ -156,18 +156,18 @@ class Guest extends \Api_Abstract
             $other = $order ? $this->di['db']->findOne('blockonomics_order', 'txid = ? AND id != ?', [$txhash, (int) $order->id]) : null;
 
             if ($order && !$other && (string) $order->txid !== $txhash) {
+                $order->txid = $txhash;
+                if ($order->status === null) {
+                    $order->status = 0;
+                }
+                $order->updated_at = date('Y-m-d H:i:s');
+                $this->di['db']->store($order);
+
                 $gateway = $this->di['db']->load('PayGateway', (int) $order->gateway_id);
                 $adapter = $gateway ? $this->di['mod_service']('Invoice', 'PayGateway')->getPaymentAdapter($gateway) : null;
                 if ($adapter && method_exists($adapter, 'monitorToken')) {
                     $res = $adapter->monitorToken($txhash, (string) $order->crypto);
-                    if ((int) ($res['code'] ?? 0) === 200) {
-                        $order->txid = $txhash;
-                        if ($order->status === null) {
-                            $order->status = 0;
-                        }
-                        $order->updated_at = date('Y-m-d H:i:s');
-                        $this->di['db']->store($order);
-                    } else {
+                    if ((int) ($res['code'] ?? 0) !== 200) {
                         $this->di['logger']->info('Blockonomics monitor_tx failed: HTTP ' . ($res['code'] ?? 0) . ' ' . substr((string) ($res['body'] ?? ''), 0, 200));
                     }
                 }
