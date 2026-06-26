@@ -3,5 +3,5 @@
   "type": "mod",
   "name": "Blockonomics",
   "description": "Companion module for the Blockonomics payment gateway. Provides the public endpoints that receive Blockonomics payment callbacks and serve the checkout.",
-  "version": "0.1.0"
+  "version": "0.1.1"
 }

@@ -19,6 +19,14 @@ declare(strict_types=1);
 
 namespace Box\Mod\Blockonomics\Api;
 
+// This module is installed at runtime (mirrored into modules/Blockonomics), so it lives outside
+// Composer's classmap. When PHP instantiates this class it must resolve the parent
+// \Api_Abstract, which isn't reliably autoloadable in that context — load it explicitly from the
+// core library first (mirrors the adapter-include pattern used in callback() below).
+if (!class_exists('Api_Abstract', false)) {
+    require_once PATH_LIBRARY . '/Api/Abstract.php';
+}
+
 class Guest extends \Api_Abstract
 {
     public function callback($data)
