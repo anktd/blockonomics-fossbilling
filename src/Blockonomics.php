@@ -68,6 +68,12 @@ class Payment_Adapter_Blockonomics implements FOSSBilling\InjectionAwareInterfac
                         'description' => 'Get from Blockonomics → Merchants (Dashboard) → Stores.',
                     ],
                 ],
+                'callback_url' => [
+                    'text', [
+                        'label' => 'Blockonomics Callback URL',
+                        'description' => 'Copy this into Blockonomics → Merchants → your store → HTTP Callback (exact match). Generated automatically — no secret to set. If blank, open a Blockonomics payment page once, then reload this page.',
+                    ],
+                ],
             ],
         ];
     }
@@ -81,6 +87,7 @@ class Payment_Adapter_Blockonomics implements FOSSBilling\InjectionAwareInterfac
     public function getHtml($api_admin, $invoice_id, $subscription): string
     {
         $this->ensureInstalled();
+        $this->persistCallbackUrl();
 
         $invoice = $this->di['db']->getExistingModelById('Invoice', $invoice_id, 'Invoice not found');
         $hashJson = json_encode((string) $invoice->hash);
@@ -436,6 +443,26 @@ HTML;
     private function getCallbackUrl(): string
     {
         return SYSTEM_URL . 'api/guest/blockonomics/callback?secret=' . urlencode($this->getCallbackSecret());
+    }
+
+    /**
+     * Persist the computed callback URL into the gateway config so the admin can copy it from
+     * the gateway settings page. Display-only - the adapter never reads it (the real secret is
+     * always derived); a stale/edited value self-heals on the next render.
+     */
+    private function persistCallbackUrl(): void
+    {
+        $row = $this->di['db']->findOne('PayGateway', 'gateway = ?', ['Blockonomics']);
+        if (!$row) {
+            return;
+        }
+        $cfg = json_decode($row->config ?? '', true) ?: [];
+        $url = $this->getCallbackUrl();
+        if (($cfg['callback_url'] ?? null) !== $url) {
+            $cfg['callback_url'] = $url;
+            $row->config = json_encode($cfg);
+            $this->di['db']->store($row);
+        }
     }
 
     /** Smallest-unit decimals: BTC = 8 (satoshis), USDT = 6. */
