@@ -33,17 +33,10 @@ The gateway ships with a small companion module (the public endpoints that recei
 ## Configuration
 
 1. Open the Blockonomics gateway settings in your FOSSBilling admin panel (**System → Payment gateways → Blockonomics**).
-2. **API Key** — get it from your [Blockonomics dashboard](https://www.blockonomics.co) under **Merchants (Dashboard) → Stores** and paste it here.
-3. **Callback Secret** — enter a long random string (e.g. from a password generator).
-4. Save the settings.
-5. In your Blockonomics dashboard, open your store's settings and set the **HTTP Callback URL** to exactly:
-
-   ```
-   https://YOUR-FOSSBILLING-DOMAIN/api/guest/blockonomics/callback?secret=YOUR-CALLBACK-SECRET
-   ```
-
-   using the same secret you entered in step 3. Blockonomics matches this URL exactly, so this step is required.
-6. Enable the gateway — done.
+2. **API Key** — get it from your [Blockonomics dashboard](https://www.blockonomics.co) under **Merchants (Dashboard) → Stores**, paste it here, and save.
+3. Copy the **Callback URL** shown on the settings page — it's generated automatically, with no secret for you to set. (If it's blank, open any invoice's Blockonomics payment page once, then reload the settings page.)
+4. In your Blockonomics dashboard, open your store's settings and paste that URL into the **HTTP Callback URL** field. Blockonomics matches it exactly, so paste it verbatim.
+5. Enable the gateway — done.
 
 ## Testing
 
