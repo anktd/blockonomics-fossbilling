@@ -39,9 +39,6 @@ class Payment_Adapter_Blockonomics implements FOSSBilling\InjectionAwareInterfac
         if (empty($this->config['api_key'])) {
             throw new Payment_Exception('The ":pay_gateway" payment gateway is not fully configured. Please configure the :missing', [':pay_gateway' => 'Blockonomics', ':missing' => 'API Key'], 4001);
         }
-        if (empty($this->config['callback_secret'])) {
-            throw new Payment_Exception('The ":pay_gateway" payment gateway is not fully configured. Please configure the :missing', [':pay_gateway' => 'Blockonomics', ':missing' => 'Callback Secret'], 4001);
-        }
     }
 
     public function setDi(Pimple\Container $di): void
@@ -69,12 +66,6 @@ class Payment_Adapter_Blockonomics implements FOSSBilling\InjectionAwareInterfac
                     'text', [
                         'label' => 'Blockonomics API Key',
                         'description' => 'Get from Blockonomics → Merchants (Dashboard) → Stores.',
-                    ],
-                ],
-                'callback_secret' => [
-                    'text', [
-                        'label' => 'Callback Secret',
-                        'description' => 'A long random string (e.g. from a password generator) used to authenticate Blockonomics callbacks. Include it in the callback URL you register with Blockonomics.',
                     ],
                 ],
             ],
@@ -423,7 +414,7 @@ HTML;
 
     private function getCallbackSecret(): string
     {
-        return (string) ($this->config['callback_secret'] ?? '');
+        return hash_hmac('sha256', 'blockonomics:callback', (string) ($this->di['config']['salt'] ?? ''));
     }
 
     /**
@@ -558,8 +549,7 @@ HTML;
 
     /**
      * Resolve THIS gateway instance's id. FOSSBilling injects it into the adapter config as
-     * notify_url (`…/ipn.php?gateway_id=<id>`); fallback = match the PayGateway row whose
-     * stored callback_secret equals ours.
+     * notify_url (`…/ipn.php?gateway_id=<id>`); fallback = the single Blockonomics gateway row.
      */
     private function resolveGatewayId(): int
     {
@@ -571,15 +561,9 @@ HTML;
             }
         }
 
-        $secret = $this->getCallbackSecret();
-        if ($secret !== '') {
-            $rows = $this->di['db']->find('PayGateway', 'gateway = ?', ['Blockonomics']);
-            foreach ($rows as $row) {
-                $cfg = json_decode($row->config ?? '', true) ?: [];
-                if (($cfg['callback_secret'] ?? null) === $secret) {
-                    return (int) $row->id;
-                }
-            }
+        $row = $this->di['db']->findOne('PayGateway', 'gateway = ?', ['Blockonomics']);
+        if ($row) {
+            return (int) $row->id;
         }
 
         throw new Payment_Exception('Could not resolve the Blockonomics gateway instance.');

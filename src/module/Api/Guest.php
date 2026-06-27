@@ -50,13 +50,11 @@ class Guest extends \Api_Abstract
             return ['result' => 'ignored', 'reason' => 'no matching order'];
         }
 
-        // Verify the secret here too (defence in depth) so a bad-secret callback never even
-        // creates a transaction. The adapter re-verifies before crediting.
-        $gateway = $this->di['db']->load('PayGateway', (int) $order->gateway_id);
-        $config = ($gateway && $gateway->config) ? (json_decode($gateway->config, true) ?: []) : [];
-        $expectedSecret = (string) ($config['callback_secret'] ?? '');
+        // Verify the secret (defence in depth). Derived from the instance salt -- the same
+        // value the adapter embeds in the registered callback URL.
+        $expectedSecret = hash_hmac('sha256', 'blockonomics:callback', (string) ($this->di['config']['salt'] ?? ''));
         $providedSecret = (string) ($data['secret'] ?? '');
-        if ($expectedSecret === '' || !hash_equals($expectedSecret, $providedSecret)) {
+        if (!hash_equals($expectedSecret, $providedSecret)) {
             $this->di['logger']->info('Blockonomics callback rejected: secret mismatch (addr ' . $addr . ').');
 
             return ['result' => 'ignored', 'reason' => 'secret mismatch'];
