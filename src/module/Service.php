@@ -25,4 +25,28 @@ class Service implements InjectionAwareInterface
     {
         return $this->di;
     }
+
+    public function uninstall(): bool
+    {
+        try {
+            if ($this->di !== null) {
+                $this->di['db']->exec('DROP TABLE IF EXISTS blockonomics_order');
+            }
+        } catch (\Throwable) {
+            // Uninstall should stay idempotent; a missing/locked table must not block core cleanup.
+        }
+
+        try {
+            if (defined('PATH_ROOT')) {
+                $logo = PATH_ROOT . '/public/gateways/blockonomics.png';
+                if (is_file($logo)) {
+                    @unlink($logo);
+                }
+            }
+        } catch (\Throwable) {
+            // The module directory is removed by FOSSBilling after this hook returns.
+        }
+
+        return true;
+    }
 }
