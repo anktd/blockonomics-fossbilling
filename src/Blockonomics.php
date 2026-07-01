@@ -151,7 +151,10 @@ class Payment_Adapter_Blockonomics implements FOSSBilling\InjectionAwareInterfac
             }
 
             function isAdminGatewayPage() {
-                return hasAdminApi() && /\/admin\b/.test(window.location.pathname) && !!findApiKeyInput();
+                // No URL check: the admin path prefix is configurable (admin_area_prefix), so the
+                // path is not a reliable signal. The admin JS API and the api_key input together
+                // only exist on the admin gateway config page.
+                return hasAdminApi() && !!findApiKeyInput();
             }
 
             if (!isAdminGatewayPage()) {
