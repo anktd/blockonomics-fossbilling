@@ -1,0 +1,14 @@
+{
+    "name": "blockonomics/blockonomics-fossbilling",
+    "description": "Blockonomics payment gateway extension for FOSSBilling. Dev-only manifest: the extension itself has no runtime dependencies.",
+    "license": "Apache-2.0",
+    "require": {
+        "php": ">=8.2"
+    },
+    "require-dev": {
+        "phpunit/phpunit": "^11.0"
+    },
+    "scripts": {
+        "test": "phpunit"
+    }
+}
