@@ -20,14 +20,15 @@ declare(strict_types=1);
 namespace Box\Mod\Blockonomics\Api;
 
 // This module is installed at runtime (mirrored into modules/Blockonomics), so it lives outside
-// Composer's classmap. When PHP instantiates this class it must resolve the parent
-// \Api_Abstract, which isn't reliably autoloadable in that context — load it explicitly from the
-// core library first (mirrors the adapter-include pattern used in callback() below).
-if (!class_exists('Api_Abstract', false)) {
-    require_once PATH_LIBRARY . '/Api/Abstract.php';
+// Composer's classmap. FOSSBilling 0.8.x routes module API calls through FOSSBilling\Api\Dispatcher,
+// which requires the class to extend FOSSBilling\Api\AbstractApi. That parent resolves via the
+// FOSSBilling\ PSR-4 autoloader, but load it explicitly first to be safe in this mirrored-module
+// context (mirrors the adapter-include pattern used in callback() below).
+if (!class_exists('FOSSBilling\\Api\\AbstractApi', false)) {
+    require_once PATH_LIBRARY . '/FOSSBilling/Api/AbstractApi.php';
 }
 
-class Guest extends \Api_Abstract
+class Guest extends \FOSSBilling\Api\AbstractApi
 {
     public function callback($data)
     {
@@ -50,16 +51,6 @@ class Guest extends \Api_Abstract
             return ['result' => 'ignored', 'reason' => 'no matching order'];
         }
 
-        // Verify the secret (defence in depth). Derived from the instance salt -- the same
-        // value the adapter embeds in the registered callback URL.
-        $expectedSecret = hash_hmac('sha256', 'blockonomics:callback', (string) ($this->di['config']['salt'] ?? ''));
-        $providedSecret = (string) ($data['secret'] ?? '');
-        if (!hash_equals($expectedSecret, $providedSecret)) {
-            $this->di['logger']->info('Blockonomics callback rejected: secret mismatch (addr ' . $addr . ').');
-
-            return ['result' => 'ignored', 'reason' => 'secret mismatch'];
-        }
-
         // The adapter class isn't autoloadable from its subdirectory — load it by explicit
         // path, the same way the core's getAdapterClassName() does.
         if (!class_exists('Payment_Adapter_Blockonomics')) {
@@ -70,6 +61,21 @@ class Guest extends \Api_Abstract
                     break;
                 }
             }
+        }
+        if (!class_exists('Payment_Adapter_Blockonomics')) {
+            $this->di['logger']->info('Blockonomics callback ignored: payment adapter is not installed.');
+
+            return ['result' => 'ignored', 'reason' => 'adapter not installed'];
+        }
+
+        // Verify the secret (defence in depth). Derived from the instance salt by the adapter --
+        // the same value it embeds in the registered callback URL (single source of truth).
+        $expectedSecret = \Payment_Adapter_Blockonomics::deriveCallbackSecret((string) ($this->di['config']['salt'] ?? ''));
+        $providedSecret = (string) ($data['secret'] ?? '');
+        if (!hash_equals($expectedSecret, $providedSecret)) {
+            $this->di['logger']->info('Blockonomics callback rejected: secret mismatch (addr ' . $addr . ').');
+
+            return ['result' => 'ignored', 'reason' => 'secret mismatch'];
         }
 
         // Hand off to the core transaction pipeline with the resolved invoice_id. This creates

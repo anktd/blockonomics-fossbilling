@@ -30,12 +30,16 @@ Install it from the [FOSSBilling extension directory](https://extensions.fossbil
 
 The gateway ships with a small companion module (the public endpoints that receive Blockonomics payment callbacks). It installs itself automatically the first time the gateway is used — no extra steps.
 
+## Uninstalling
+
+For complete removal, uninstall the **Blockonomics payment gateway** under **System → Payment gateways**, then uninstall the **Blockonomics module** under **Extensions**. The gateway itself has no uninstall hook in FOSSBilling; the companion module cleanup removes the Blockonomics order table and mirrored gateway logo.
+
 ## Configuration
 
 1. Open the Blockonomics gateway settings in your FOSSBilling admin panel (**System → Payment gateways → Blockonomics**).
 2. **API Key** — get it from your [Blockonomics dashboard](https://www.blockonomics.co) under **Merchants (Dashboard) → Stores**, paste it here, and save.
-3. Copy the **Callback URL** shown on the settings page — it's generated automatically, with no secret for you to set. (If it's blank, open any invoice's Blockonomics payment page once, then reload the settings page.)
-4. In your Blockonomics dashboard, open your store's settings and paste that URL into the **HTTP Callback URL** field. Blockonomics matches it exactly, so paste it verbatim.
+3. Click **Test Setup**. It validates your API key and links your Blockonomics store automatically: the **Callback URL** shown below the button is registered as the store's HTTP Callback (creating a store if you have none), and address generation is tested for each enabled coin.
+4. Prefer to do it manually? Copy the **Callback URL** from the settings page into your store's **HTTP Callback URL** field in the Blockonomics dashboard — it must match exactly, so paste it verbatim.
 5. Enable the gateway — done.
 
 ## Testing

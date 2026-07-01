@@ -21,18 +21,25 @@ class Payment_Adapter_Blockonomics implements FOSSBilling\InjectionAwareInterfac
 {
     protected ?Pimple\Container $di = null;
 
-    private const string BASE_URL = 'https://www.blockonomics.co';
-    private const string NEW_ADDRESS_URL = self::BASE_URL . '/api/new_address';
-    private const string PRICE_URL = self::BASE_URL . '/api/price';
+    // No typed constants: FOSSBilling supports PHP 8.2, const types need 8.3.
+    private const BASE_URL = 'https://www.blockonomics.co';
+    private const NEW_ADDRESS_URL = self::BASE_URL . '/api/new_address';
+    private const PRICE_URL = self::BASE_URL . '/api/price';
+    private const WALLETS_URL = self::BASE_URL . '/api/v2/wallets';
+    private const STORES_URL = self::BASE_URL . '/api/v2/stores?wallets=true';
+    private const STORE_URL = self::BASE_URL . '/api/v2/stores';
 
     /** Coins this gateway offers the buyer. */
-    private const array SUPPORTED = ['BTC', 'USDT'];
+    private const SUPPORTED = ['BTC', 'USDT'];
 
     /** Confirmations required before an invoice is marked paid (fixed at 2). */
-    private const int CONFIRMATIONS = 2;
+    private const CONFIRMATIONS = 2;
 
     /** Blockonomics' marker txid for dashboard-generated test callbacks (no real BTC). */
-    private const string TEST_TXID = 'WarningThisIsAGeneratedTestPaymentAndNotARealBitcoinTransaction';
+    private const TEST_TXID = 'WarningThisIsAGeneratedTestPaymentAndNotARealBitcoinTransaction';
+
+    private static bool $moduleFilesEnsured = false;
+    private static ?string $moduleFileInstallError = null;
 
     public function __construct(private $config)
     {
@@ -53,9 +60,12 @@ class Payment_Adapter_Blockonomics implements FOSSBilling\InjectionAwareInterfac
 
     public static function getConfig(): array
     {
+        self::ensureModuleFiles();
+
         return [
             'supports_one_time_payments' => true,
             'supports_subscriptions' => false,
+            'description' => self::renderSetupDescription(),
             'logo' => [
                 'logo' => 'blockonomics.png',
                 'height' => '30px',
@@ -68,14 +78,301 @@ class Payment_Adapter_Blockonomics implements FOSSBilling\InjectionAwareInterfac
                         'description' => 'Get from Blockonomics → Merchants (Dashboard) → Stores.',
                     ],
                 ],
-                'callback_url' => [
-                    'text', [
-                        'label' => 'Blockonomics Callback URL',
-                        'description' => 'Copy this into Blockonomics → Merchants → your store → HTTP Callback (exact match). Generated automatically — no secret to set. If blank, open a Blockonomics payment page once, then reload this page.',
-                    ],
-                ],
             ],
         ];
+    }
+
+    private static function renderSetupDescription(): string
+    {
+        $manualNote = '';
+        if (self::$moduleFileInstallError !== null) {
+            $error = htmlspecialchars(self::$moduleFileInstallError, ENT_QUOTES);
+            $manualNote = '<p class="blockonomics-setup-note blockonomics-setup-note-error">Automatic companion-module install failed: ' . $error . '. Copy the bundled module/ folder to modules/Blockonomics manually, then reload this page.</p>';
+        }
+
+        return <<<HTML
+<div class="blockonomics-admin-setup" data-blockonomics-setup style="display:none;margin-top:12px">
+    <style>
+    .blockonomics-callback-row { display: flex; gap: 8px; align-items: stretch; margin-top: 4px; }
+    .blockonomics-callback-row input { flex: 1 1 auto; min-width: 0; font-family: monospace; font-size: 12px; }
+    .blockonomics-setup-results { margin-top: 10px; display: none; }
+    .blockonomics-setup-results > div { margin: 3px 0; }
+    .blockonomics-setup-results ul { margin: 4px 0 0 18px; padding: 0; }
+    .blockonomics-setup-note { margin: 8px 0 0; }
+    .blockonomics-setup-note-error { color: #d63939; }
+    </style>
+    <button type="button" class="btn btn-primary" data-blockonomics-test>Test Setup</button>
+    <div class="blockonomics-setup-results" data-blockonomics-results aria-live="polite"></div>
+    <label class="form-label" for="blockonomics-callback-url" style="margin:12px 0 0">Callback URL</label>
+    <div class="blockonomics-callback-row">
+        <input id="blockonomics-callback-url" class="form-control" data-blockonomics-callback readonly value="Loading callback URL..." autocomplete="off">
+        <button type="button" class="btn btn-outline-secondary" data-blockonomics-copy>Copy</button>
+    </div>
+    <div class="form-hint">Your Blockonomics store's HTTP Callback — Test Setup registers it automatically.</div>
+    {$manualNote}
+    <script>
+    (function () {
+        var script = document.currentScript;
+        var root = script ? script.closest('[data-blockonomics-setup]') : null;
+        if (!root || root.dataset.initialized === '1') { return; }
+        root.dataset.initialized = '1';
+
+        function ready(fn) {
+            if (document.readyState === 'loading') {
+                document.addEventListener('DOMContentLoaded', fn);
+            } else {
+                fn();
+            }
+        }
+
+        ready(function () {
+            var input = root.querySelector('[data-blockonomics-callback]');
+            var copyButton = root.querySelector('[data-blockonomics-copy]');
+            var testButton = root.querySelector('[data-blockonomics-test]');
+            var results = root.querySelector('[data-blockonomics-results]');
+            var shared = window.__blockonomicsSetup || (window.__blockonomicsSetup = {});
+
+            function hasAdminApi() {
+                return !!(window.FOSSBilling && window.FOSSBilling.api && window.FOSSBilling.api.admin && typeof window.FOSSBilling.api.admin.post === 'function');
+            }
+
+            function findApiKeyInput() {
+                var selectors = [
+                    'input[name="api_key"]',
+                    'input[name="config[api_key]"]',
+                    'input[name$="[api_key]"]',
+                    'input[id*="api_key"]'
+                ];
+                for (var i = 0; i < selectors.length; i++) {
+                    var found = document.querySelector(selectors[i]);
+                    if (found) { return found; }
+                }
+                return null;
+            }
+
+            function isAdminGatewayPage() {
+                return hasAdminApi() && /\/admin\b/.test(window.location.pathname) && !!findApiKeyInput();
+            }
+
+            if (!isAdminGatewayPage()) {
+                if (root.parentNode) { root.parentNode.removeChild(root); }
+                return;
+            }
+
+            // Move the panel out of the top description alert to sit directly below the API
+            // key field, so setup reads top-to-bottom: API key -> Test Setup -> Callback URL.
+            // If the DOM isn't as expected the panel just stays (and works) where it rendered.
+            var alertHost = root.parentElement;
+            var keyWrapper = findApiKeyInput().parentElement;
+            if (keyWrapper && keyWrapper.parentElement) {
+                keyWrapper.parentElement.insertBefore(root, keyWrapper.nextSibling);
+                if (alertHost && alertHost.children.length === 0 && alertHost.textContent.trim() === '') {
+                    alertHost.style.display = 'none';
+                }
+            }
+
+            root.style.display = '';
+
+            function clear(node) {
+                while (node.firstChild) { node.removeChild(node.firstChild); }
+            }
+
+            function showMessage(message) {
+                results.style.display = '';
+                clear(results);
+                var p = document.createElement('p');
+                p.textContent = message;
+                results.appendChild(p);
+            }
+
+            function appendSection(title, items) {
+                if (!items || !items.length) { return; }
+                var heading = document.createElement('strong');
+                heading.textContent = title;
+                results.appendChild(heading);
+                var list = document.createElement('ul');
+                items.forEach(function (item) {
+                    var li = document.createElement('li');
+                    li.textContent = String(item);
+                    list.appendChild(li);
+                });
+                results.appendChild(list);
+            }
+
+            function unwrap(response) {
+                if (response && response.error) {
+                    var err = new Error(response.error.message || 'FossBilling API error');
+                    err.payload = response.error;
+                    throw err;
+                }
+                return response && Object.prototype.hasOwnProperty.call(response, 'result') ? response.result : response;
+            }
+
+            function errorCode(error) {
+                var code = error && error.payload && error.payload.code ? error.payload.code : (error && error.code ? error.code : null);
+                return code === null ? null : parseInt(code, 10);
+            }
+
+            function adminPost(endpoint, data) {
+                // FossBilling's admin JS API is callback-style: post(endpoint, params, onSuccess, onError).
+                // post() returns undefined (NOT a promise) and calls onSuccess with the already-unwrapped
+                // result. Wrap it in a promise so the rest of this script can chain .then()/.catch()
+                // without throwing synchronously (which would abort init before the buttons are wired).
+                return new Promise(function (resolve, reject) {
+                    var done = false;
+                    function ok(result) { if (!done) { done = true; resolve(result); } }
+                    function fail(error) { if (!done) { done = true; reject(error); } }
+                    var ret;
+                    try {
+                        ret = window.FOSSBilling.api.admin.post(endpoint, data || {}, ok, fail);
+                    } catch (e) {
+                        fail(e);
+                        return;
+                    }
+                    // Defensive: some builds may return a promise (raw envelope) instead of using callbacks.
+                    if (ret && typeof ret.then === 'function') {
+                        ret.then(function (response) {
+                            try { ok(unwrap(response)); } catch (e) { fail(e); }
+                        }, fail);
+                    }
+                });
+            }
+
+            function activateModule() {
+                if (!shared.activatePromise) {
+                    shared.activatePromise = adminPost('extension/activate', { type: 'mod', id: 'blockonomics' }).catch(function (error) {
+                        shared.activatePromise = null;
+                        throw error;
+                    });
+                }
+                return shared.activatePromise;
+            }
+
+            function loadCallbackUrl() {
+                if (!shared.callbackPromise) {
+                    shared.callbackPromise = adminPost('blockonomics/callback_url', {}).catch(function (error) {
+                        if (errorCode(error) === 715) {
+                            return activateModule().then(function () {
+                                return adminPost('blockonomics/callback_url', {});
+                            });
+                        }
+                        throw error;
+                    }).catch(function (error) {
+                        shared.callbackPromise = null;
+                        throw error;
+                    });
+                }
+                return shared.callbackPromise;
+            }
+
+            function setCallbackUrl(data) {
+                var url = data && data.callback_url ? data.callback_url : '';
+                input.value = url || 'Could not load the Blockonomics callback URL.';
+                copyButton.disabled = !url;
+            }
+
+            loadCallbackUrl().then(setCallbackUrl).catch(function (error) {
+                copyButton.disabled = true;
+                input.value = 'Could not load the Blockonomics callback URL.';
+                if (errorCode(error) === 715) {
+                    showMessage('Activate the Blockonomics module under Extensions, then reload this page.');
+                } else {
+                    showMessage('Could not initialize Blockonomics setup. The admin needs manage_extensions permission, or activate Blockonomics under Extensions.');
+                }
+            });
+
+            copyButton.addEventListener('click', function () {
+                var value = input.value;
+                if (!value || copyButton.disabled) { return; }
+                var copied = navigator.clipboard && navigator.clipboard.writeText
+                    ? navigator.clipboard.writeText(value)
+                    : new Promise(function (resolve) {
+                        input.select();
+                        document.execCommand('copy');
+                        resolve();
+                    });
+                copied.then(function () { showMessage('Callback URL copied.'); });
+            });
+
+            function findGatewayId() {
+                var candidates = [window.location.href];
+                var nodes = document.querySelectorAll('input, textarea, a');
+                Array.prototype.forEach.call(nodes, function (node) {
+                    candidates.push(node.value || node.getAttribute('href') || node.textContent || '');
+                });
+                if (document.body) { candidates.push(document.body.textContent || ''); }
+                for (var i = 0; i < candidates.length; i++) {
+                    var match = String(candidates[i]).match(/[?&]gateway_id=(\d+)/);
+                    if (match) { return parseInt(match[1], 10); }
+                }
+                return null;
+            }
+
+            function renderSetupResult(result) {
+                results.style.display = '';
+                clear(results);
+                var message = document.createElement('div');
+                message.style.fontWeight = '600';
+                message.textContent = result && result.message ? String(result.message) : 'Test Setup complete.';
+                results.appendChild(message);
+                if (result && result.note) {
+                    var note = document.createElement('div');
+                    note.style.color = '#b26205';
+                    note.textContent = String(result.note);
+                    results.appendChild(note);
+                }
+                var cryptos = (result && result.cryptos) || [];
+                if (result && result.store && result.store.name) {
+                    var storeLine = document.createElement('div');
+                    var storeLabel = document.createElement('span');
+                    storeLabel.textContent = 'Store: ' + result.store.name + ' ';
+                    storeLine.appendChild(storeLabel);
+                    cryptos.forEach(function (c) {
+                        var mark = document.createElement('span');
+                        mark.textContent = String(c.code || '').toUpperCase() + ' ' + (c.ok ? '✔' : '✖');
+                        mark.style.color = c.ok ? '#2fb344' : '#d63939';
+                        mark.style.fontWeight = '600';
+                        mark.style.marginRight = '10px';
+                        mark.title = c.message ? String(c.message) : '';
+                        storeLine.appendChild(mark);
+                    });
+                    results.appendChild(storeLine);
+                }
+                cryptos.forEach(function (c) {
+                    if (!c.ok && c.message) {
+                        var detail = document.createElement('div');
+                        detail.style.color = '#d63939';
+                        detail.textContent = String(c.code || '').toUpperCase() + ': ' + String(c.message);
+                        results.appendChild(detail);
+                    }
+                });
+                appendSection('Actions taken', result ? result.actions_taken : []);
+                appendSection('Needs attention', result ? result.error : []);
+                if (result && result.callback_url) {
+                    input.value = result.callback_url;
+                    copyButton.disabled = false;
+                }
+            }
+
+            testButton.addEventListener('click', function () {
+                var keyInput = findApiKeyInput();
+                var apiKey = keyInput ? keyInput.value : '';
+                testButton.disabled = true;
+                showMessage('Testing Blockonomics setup...');
+                adminPost('blockonomics/test_setup', {
+                    gateway_id: findGatewayId(),
+                    api_key: apiKey
+                }).then(renderSetupResult).catch(function () {
+                    showMessage('Test Setup failed before it could complete. Check that the Blockonomics module is active and your admin session is still valid.');
+                }).then(function () {
+                    testButton.disabled = false;
+                });
+            });
+        });
+    })();
+    </script>
+</div>
+HTML;
     }
 
     /**
@@ -87,7 +384,6 @@ class Payment_Adapter_Blockonomics implements FOSSBilling\InjectionAwareInterfac
     public function getHtml($api_admin, $invoice_id, $subscription): string
     {
         $this->ensureInstalled();
-        $this->persistCallbackUrl();
 
         $invoice = $this->di['db']->getExistingModelById('Invoice', $invoice_id, 'Invoice not found');
         $hashJson = json_encode((string) $invoice->hash);
@@ -421,7 +717,24 @@ HTML;
 
     private function getCallbackSecret(): string
     {
-        return hash_hmac('sha256', 'blockonomics:callback', (string) ($this->di['config']['salt'] ?? ''));
+        return self::deriveCallbackSecret((string) ($this->di['config']['salt'] ?? ''));
+    }
+
+    public static function deriveCallbackSecret(string $salt): string
+    {
+        // Truncated to 40 hex chars (160 bits) to keep the callback URL short — same secret
+        // length our WooCommerce plugin uses (sha1). Truncated HMAC output is standard practice.
+        return substr(hash_hmac('sha256', 'blockonomics:callback', $salt), 0, 40);
+    }
+
+    public static function getCallbackUrlFromDi(Pimple\Container $di): string
+    {
+        return self::buildCallbackUrl(self::deriveCallbackSecret((string) ($di['config']['salt'] ?? '')));
+    }
+
+    public static function buildCallbackUrl(string $secret): string
+    {
+        return SYSTEM_URL . 'api/guest/blockonomics/callback?secret=' . urlencode($secret);
     }
 
     /**
@@ -442,27 +755,7 @@ HTML;
      */
     private function getCallbackUrl(): string
     {
-        return SYSTEM_URL . 'api/guest/blockonomics/callback?secret=' . urlencode($this->getCallbackSecret());
-    }
-
-    /**
-     * Persist the computed callback URL into the gateway config so the admin can copy it from
-     * the gateway settings page. Display-only - the adapter never reads it (the real secret is
-     * always derived); a stale/edited value self-heals on the next render.
-     */
-    private function persistCallbackUrl(): void
-    {
-        $row = $this->di['db']->findOne('PayGateway', 'gateway = ?', ['Blockonomics']);
-        if (!$row) {
-            return;
-        }
-        $cfg = json_decode($row->config ?? '', true) ?: [];
-        $url = $this->getCallbackUrl();
-        if (($cfg['callback_url'] ?? null) !== $url) {
-            $cfg['callback_url'] = $url;
-            $row->config = json_encode($cfg);
-            $this->di['db']->store($row);
-        }
+        return self::buildCallbackUrl($this->getCallbackSecret());
     }
 
     /** Smallest-unit decimals: BTC = 8 (satoshis), USDT = 6. */
@@ -480,34 +773,99 @@ HTML;
      */
     private function ensureInstalled(): void
     {
+        self::ensureModuleFiles();
+        $srcVersion = self::getBundledModuleVersion();
+        $this->ensureModuleActivated($srcVersion);
+    }
+
+    /**
+     * Mirror bundled module files and the gateway logo into the install tree. Static getConfig()
+     * runs without DI, so this method must never throw; manifest.json is copied last so an
+     * interrupted install is retried on the next render.
+     */
+    public static function ensureModuleFiles(): bool
+    {
+        if (self::$moduleFilesEnsured) {
+            return self::$moduleFileInstallError === null;
+        }
+        self::$moduleFilesEnsured = true;
+        self::$moduleFileInstallError = null;
+
+        if (!defined('PATH_MODS')) {
+            return true;
+        }
+
         $src = __DIR__ . DIRECTORY_SEPARATOR . 'module';
         if (!is_dir($src)) {
-            return; // dev layout: module managed manually
+            return true; // dev layout: module managed manually
         }
 
         $dest = PATH_MODS . DIRECTORY_SEPARATOR . 'Blockonomics';
-        $srcVersion = (string) (json_decode((string) @file_get_contents($src . '/manifest.json'), true)['version'] ?? '0');
+        $srcVersion = self::getBundledModuleVersion();
         $destVersion = (string) (json_decode((string) @file_get_contents($dest . '/manifest.json'), true)['version'] ?? null);
+        $logoDest = defined('PATH_ROOT') ? PATH_ROOT . '/public/gateways/blockonomics.png' : null;
 
-        if ($srcVersion === $destVersion && is_file(PATH_ROOT . '/public/gateways/blockonomics.png')) {
-            $this->ensureModuleActivated($srcVersion);
-
-            return;
+        if ($srcVersion === $destVersion && ($logoDest === null || is_file($logoDest))) {
+            return true;
         }
 
         try {
-            $fs = new \Symfony\Component\Filesystem\Filesystem();
-            $fs->mirror($src, $dest, null, ['override' => true]);
+            self::copyDirectoryWithoutManifest($src, $dest);
 
             $logo = __DIR__ . DIRECTORY_SEPARATOR . 'blockonomics.png';
-            if (is_file($logo)) {
-                $fs->copy($logo, PATH_ROOT . '/public/gateways/blockonomics.png', true);
+            if ($logoDest !== null && is_file($logo)) {
+                $logoDir = dirname($logoDest);
+                if (!is_dir($logoDir) && !@mkdir($logoDir, 0775, true) && !is_dir($logoDir)) {
+                    throw new \RuntimeException('Could not create ' . $logoDir);
+                }
+                if (!@copy($logo, $logoDest)) {
+                    throw new \RuntimeException('Could not copy gateway logo');
+                }
             }
-        } catch (\Exception $e) {
-            throw new Payment_Exception('Blockonomics: could not install the companion module automatically (:err). Please copy the "module" folder from library/Payment/Adapter/Blockonomics to modules/Blockonomics manually.', [':err' => $e->getMessage()]);
+
+            $manifestSrc = $src . DIRECTORY_SEPARATOR . 'manifest.json';
+            if (is_file($manifestSrc) && !@copy($manifestSrc, $dest . DIRECTORY_SEPARATOR . 'manifest.json')) {
+                throw new \RuntimeException('Could not copy module manifest');
+            }
+        } catch (\Throwable $e) {
+            self::$moduleFileInstallError = $e->getMessage();
+
+            return false;
         }
 
-        $this->ensureModuleActivated($srcVersion);
+        return true;
+    }
+
+    private static function getBundledModuleVersion(): string
+    {
+        $src = __DIR__ . DIRECTORY_SEPARATOR . 'module' . DIRECTORY_SEPARATOR . 'manifest.json';
+
+        return (string) (json_decode((string) @file_get_contents($src), true)['version'] ?? '0');
+    }
+
+    private static function copyDirectoryWithoutManifest(string $src, string $dest): void
+    {
+        if (!is_dir($dest) && !@mkdir($dest, 0775, true) && !is_dir($dest)) {
+            throw new \RuntimeException('Could not create ' . $dest);
+        }
+
+        $items = scandir($src);
+        if ($items === false) {
+            throw new \RuntimeException('Could not read ' . $src);
+        }
+
+        foreach ($items as $item) {
+            if ($item === '.' || $item === '..' || $item === 'manifest.json') {
+                continue;
+            }
+            $from = $src . DIRECTORY_SEPARATOR . $item;
+            $to = $dest . DIRECTORY_SEPARATOR . $item;
+            if (is_dir($from)) {
+                self::copyDirectoryWithoutManifest($from, $to);
+            } elseif (is_file($from) && !@copy($from, $to)) {
+                throw new \RuntimeException('Could not copy ' . $from);
+            }
+        }
     }
 
     /** Make sure the companion module is registered as an installed extension. */
@@ -524,6 +882,421 @@ HTML;
             $ext->version = $version;
             $this->di['db']->store($ext);
         }
+    }
+
+    public function testSetup(): array
+    {
+        $callbackUrl = $this->getCallbackUrl();
+        $result = [
+            'message' => 'Blockonomics setup needs attention.',
+            'success' => [],
+            'error' => [],
+            'store' => null,
+            'cryptos' => [],
+            'callback_url' => $callbackUrl,
+            'actions_taken' => [],
+        ];
+
+        try {
+            $walletResult = $this->validateApiKey();
+            if (!$walletResult['ok']) {
+                $result['error'][] = $walletResult['error'];
+
+                return $result;
+            }
+            $wallets = $walletResult['wallets'];
+            $result['success'][] = 'API key validated.';
+
+            if (empty($wallets)) {
+                $result['error'][] = 'No Blockonomics wallets were found. Create a wallet in Blockonomics, then run Test Setup again.';
+
+                return $result;
+            }
+
+            $storeResult = $this->fetchStores();
+            if (!$storeResult['ok']) {
+                $result['error'][] = $storeResult['error'];
+
+                return $result;
+            }
+
+            $classification = $this->classifyStores($storeResult['stores'], $callbackUrl);
+            $store = $this->selectBestStore($classification['exact']);
+            if ($store) {
+                $result['success'][] = count($classification['exact']) > 1
+                    ? 'Found multiple exact callback matches; selected the best configured store.'
+                    : 'Found a store with the exact Blockonomics callback URL.';
+            } elseif (!empty($classification['partial'])) {
+                $store = $this->selectBestStore($classification['partial']);
+                $updated = $this->updateStoreCallback($store, $callbackUrl);
+                if (!$updated['ok']) {
+                    $result['error'][] = $updated['error'];
+
+                    return $result;
+                }
+                $store = $updated['store'];
+                $result['actions_taken'][] = 'Updated a Blockonomics store callback URL to the FossBilling callback URL.';
+            } else {
+                $created = $this->createStore($callbackUrl);
+                if (!$created['ok']) {
+                    $result['error'][] = $created['error'];
+
+                    return $result;
+                }
+                $store = $created['store'];
+                $result['actions_taken'][] = 'Created a Blockonomics store for FossBilling.';
+            }
+
+            if (empty($store->wallets)) {
+                if (count($wallets) === 1) {
+                    $attached = $this->attachWallet($store, $wallets[0]);
+                    if (!$attached['ok']) {
+                        $result['error'][] = $attached['error'];
+
+                        return $result;
+                    }
+                    $store = $attached['store'];
+                    $result['actions_taken'][] = 'Attached the only available wallet to the Blockonomics store.';
+                } else {
+                    $result['error'][] = 'The selected store has no wallet attached, and this API key has multiple wallets. Attach the correct wallet in Blockonomics, then run Test Setup again.';
+                    $result['store'] = $this->summarizeStore($store, []);
+
+                    return $result;
+                }
+            }
+
+            $enabledCryptos = $this->getEnabledCryptos($store);
+            $result['store'] = $this->summarizeStore($store, $enabledCryptos);
+            if (empty($enabledCryptos)) {
+                $result['error'][] = 'No payment methods are enabled on the selected Blockonomics store.';
+
+                return $result;
+            }
+
+            $result['cryptos'] = $this->testCryptos($enabledCryptos);
+            if (empty($result['cryptos'])) {
+                $result['error'][] = 'No BTC or USDT payment method is enabled on the selected Blockonomics store.';
+
+                return $result;
+            }
+
+            if (empty($result['error'])) {
+                $okCount = count(array_filter($result['cryptos'], static fn (array $c): bool => $c['ok']));
+                if ($okCount === count($result['cryptos'])) {
+                    $result['message'] = 'Blockonomics setup looks ready.';
+                } elseif ($okCount > 0) {
+                    $result['message'] = 'Blockonomics setup is working — some payment methods need attention.';
+                }
+            }
+        } catch (\Throwable $e) {
+            $result['error'][] = $e->getMessage();
+        }
+
+        return $result;
+    }
+
+    public function validateApiKey(): array
+    {
+        $res = $this->httpRequest('GET', self::WALLETS_URL, $this->apiHeaders());
+        if ($res['code'] === 401) {
+            return ['ok' => false, 'wallets' => [], 'error' => 'API key is incorrect.'];
+        }
+        if ($res['code'] !== 200) {
+            return ['ok' => false, 'wallets' => [], 'error' => 'Could not verify the API key: ' . $this->apiErrorMessage($res)];
+        }
+
+        $data = json_decode($res['body']);
+        if (!$data || !isset($data->data) || !is_array($data->data)) {
+            return ['ok' => false, 'wallets' => [], 'error' => 'Invalid wallets response from Blockonomics.'];
+        }
+
+        return ['ok' => true, 'wallets' => $data->data, 'error' => null];
+    }
+
+    public function fetchStores(): array
+    {
+        $res = $this->httpRequest('GET', self::STORES_URL, $this->apiHeaders());
+        if ($res['code'] === 401) {
+            return ['ok' => false, 'stores' => [], 'error' => 'API key is incorrect.'];
+        }
+        if ($res['code'] !== 200) {
+            return ['ok' => false, 'stores' => [], 'error' => 'Could not fetch Blockonomics stores: ' . $this->apiErrorMessage($res)];
+        }
+
+        $data = json_decode($res['body']);
+        if (!$data || !isset($data->data) || !is_array($data->data)) {
+            return ['ok' => false, 'stores' => [], 'error' => 'Invalid stores response from Blockonomics.'];
+        }
+
+        return ['ok' => true, 'stores' => $data->data, 'error' => null];
+    }
+
+    public function classifyStores(array $stores, string $callbackUrl): array
+    {
+        $matches = ['exact' => [], 'partial' => []];
+        foreach ($stores as $store) {
+            $storeCallback = (string) ($store->http_callback ?? '');
+            if ($storeCallback === $callbackUrl) {
+                $matches['exact'][] = $store;
+            } elseif ($this->isSafePartialCallback($storeCallback, $callbackUrl)) {
+                $matches['partial'][] = $store;
+            }
+        }
+
+        return $matches;
+    }
+
+    public function findExactMatchingStore(array $stores, string $callbackUrl): ?object
+    {
+        return $this->selectBestStore($this->classifyStores($stores, $callbackUrl)['exact']);
+    }
+
+    public function selectBestStore(array $stores): ?object
+    {
+        if (empty($stores)) {
+            return null;
+        }
+
+        $bestStore = $stores[0];
+        $bestScore = $this->scoreStore($bestStore);
+        foreach (array_slice($stores, 1) as $store) {
+            $score = $this->scoreStore($store);
+            if ($score > $bestScore) {
+                $bestStore = $store;
+                $bestScore = $score;
+            }
+        }
+
+        return $bestStore;
+    }
+
+    public function scoreStore(object $store): int
+    {
+        $score = 0;
+        if (!empty($store->wallets)) {
+            $score += 10;
+        }
+        if (trim((string) ($store->name ?? '')) !== '') {
+            $score++;
+        }
+
+        return $score;
+    }
+
+    public function createStore(string $callbackUrl): array
+    {
+        $res = $this->httpRequest(
+            'POST',
+            self::STORE_URL,
+            $this->apiHeaders(),
+            (string) json_encode(['name' => 'FOSSBilling Blockonomics', 'http_callback' => $callbackUrl])
+        );
+        if (!in_array($res['code'], [200, 201], true)) {
+            return ['ok' => false, 'store' => null, 'error' => 'Could not create a Blockonomics store: ' . $this->apiErrorMessage($res)];
+        }
+
+        $store = $this->storeFromResponse($res);
+        if (!$store) {
+            return ['ok' => false, 'store' => null, 'error' => 'Blockonomics did not return the created store.'];
+        }
+
+        return ['ok' => true, 'store' => $store, 'error' => null];
+    }
+
+    public function updateStoreCallback(object $store, string $callbackUrl): array
+    {
+        $storeId = $this->storeId($store);
+        if ($storeId === null) {
+            return ['ok' => false, 'store' => $store, 'error' => 'Could not update the matching store because it has no id.'];
+        }
+
+        $res = $this->httpRequest(
+            'POST',
+            self::STORE_URL . '/' . rawurlencode((string) $storeId),
+            $this->apiHeaders(),
+            (string) json_encode([
+                'name' => (string) ($store->name ?? 'FOSSBilling Blockonomics'),
+                'http_callback' => $callbackUrl,
+            ])
+        );
+        if ($res['code'] !== 200) {
+            return ['ok' => false, 'store' => $store, 'error' => 'Could not update the Blockonomics store callback: ' . $this->apiErrorMessage($res)];
+        }
+
+        // Keep the original store object: it came from GET /stores?wallets=true and carries the
+        // wallets array, which the update response does not. Just record the new callback on it.
+        $store->http_callback = $callbackUrl;
+
+        return ['ok' => true, 'store' => $store, 'error' => null];
+    }
+
+    public function attachWallet(object $store, object $wallet): array
+    {
+        $storeId = $this->storeId($store);
+        $walletId = $this->walletId($wallet);
+        if ($storeId === null || $walletId === null) {
+            return ['ok' => false, 'store' => $store, 'error' => 'Could not attach the wallet because the store or wallet id is missing.'];
+        }
+
+        $res = $this->httpRequest(
+            'POST',
+            self::STORE_URL . '/' . rawurlencode((string) $storeId) . '/wallets',
+            $this->apiHeaders(),
+            (string) json_encode(['wallet_id' => $walletId])
+        );
+        if ($res['code'] !== 200) {
+            return ['ok' => false, 'store' => $store, 'error' => 'Could not attach the wallet to the Blockonomics store: ' . $this->apiErrorMessage($res)];
+        }
+
+        $responseStore = $this->storeFromResponse($res);
+        $updated = $responseStore && isset($responseStore->id) ? $responseStore : $store;
+        $data = json_decode($res['body']);
+        if (isset($data->data->wallets)) {
+            $updated->wallets = $data->data->wallets;
+        } elseif ($responseStore && isset($responseStore->wallets)) {
+            $updated->wallets = $responseStore->wallets;
+        }
+
+        return ['ok' => true, 'store' => $updated, 'error' => null];
+    }
+
+    public function getEnabledCryptos(object $store): array
+    {
+        $enabled = [];
+        if (!empty($store->wallets) && is_array($store->wallets)) {
+            foreach ($store->wallets as $wallet) {
+                if (!empty($wallet->crypto)) {
+                    $crypto = strtolower((string) $wallet->crypto);
+                    if (!in_array($crypto, $enabled, true)) {
+                        $enabled[] = $crypto;
+                    }
+                }
+            }
+        }
+
+        return $enabled;
+    }
+
+    /**
+     * Probe address generation for each supported enabled crypto. Returns one entry per
+     * testable coin: ['code' => 'btc', 'ok' => bool, 'message' => error text when not ok].
+     */
+    public function testCryptos(array $enabledCryptos): array
+    {
+        $results = [];
+        $testable = array_values(array_intersect(['btc', 'usdt'], array_map('strtolower', $enabledCryptos)));
+
+        foreach ($testable as $crypto) {
+            try {
+                $address = $this->fetchNewAddress($this->getCallbackUrl(), strtoupper($crypto));
+                $results[] = ['code' => $crypto, 'ok' => $address !== '', 'message' => $address !== '' ? '' : 'Empty address returned.'];
+            } catch (\Throwable $e) {
+                $results[] = ['code' => $crypto, 'ok' => false, 'message' => $e->getMessage()];
+            }
+        }
+
+        return $results;
+    }
+
+    private function apiHeaders(): array
+    {
+        return [
+            'Authorization: Bearer ' . trim((string) $this->config['api_key']),
+            'Content-Type: application/json',
+            'Accept: application/json',
+        ];
+    }
+
+    private function apiErrorMessage(array $res): string
+    {
+        $data = json_decode($res['body']);
+        if (isset($data->error->message)) {
+            return (string) $data->error->message;
+        }
+        if (isset($data->error) && is_string($data->error)) {
+            return $data->error;
+        }
+        if (isset($data->message)) {
+            return (string) $data->message;
+        }
+
+        return 'HTTP ' . $res['code'];
+    }
+
+    private function storeFromResponse(array $res): ?object
+    {
+        $data = json_decode($res['body']);
+        if (!$data || !isset($data->data)) {
+            return null;
+        }
+        if (is_array($data->data)) {
+            return isset($data->data[0]) && is_object($data->data[0]) ? $data->data[0] : null;
+        }
+        if (is_object($data->data)) {
+            return $data->data;
+        }
+
+        return null;
+    }
+
+    private function storeId(object $store): int|string|null
+    {
+        if (isset($store->id) && $store->id !== '') {
+            return is_numeric($store->id) ? (int) $store->id : (string) $store->id;
+        }
+
+        return null;
+    }
+
+    private function walletId(object $wallet): ?int
+    {
+        if (isset($wallet->id) && is_numeric($wallet->id)) {
+            return (int) $wallet->id;
+        }
+
+        return null;
+    }
+
+    private function isSafePartialCallback(string $storeCallback, string $callbackUrl): bool
+    {
+        if ($storeCallback === '' || $storeCallback === $callbackUrl) {
+            return false;
+        }
+
+        $storeParts = parse_url($storeCallback);
+        $targetParts = parse_url($callbackUrl);
+        if (!is_array($storeParts) || !is_array($targetParts)) {
+            return false;
+        }
+        if (($storeParts['path'] ?? '') !== '/api/guest/blockonomics/callback' || ($targetParts['path'] ?? '') !== '/api/guest/blockonomics/callback') {
+            return false;
+        }
+        if (strtolower((string) ($storeParts['host'] ?? '')) !== strtolower((string) ($targetParts['host'] ?? ''))) {
+            return false;
+        }
+        if ((string) ($storeParts['port'] ?? '') !== (string) ($targetParts['port'] ?? '')) {
+            return false;
+        }
+
+        parse_str((string) ($storeParts['query'] ?? ''), $query);
+        foreach (array_keys($query) as $key) {
+            if ($key !== 'secret') {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private function summarizeStore(object $store, array $enabledCryptos): array
+    {
+        return [
+            'id' => $this->storeId($store),
+            'name' => (string) ($store->name ?? ''),
+            'http_callback' => (string) ($store->http_callback ?? ''),
+            'enabled_cryptos' => array_values($enabledCryptos),
+            'wallet_count' => !empty($store->wallets) && is_array($store->wallets) ? count($store->wallets) : 0,
+        ];
     }
 
     /**
