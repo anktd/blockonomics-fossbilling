@@ -27,7 +27,6 @@ class Payment_Adapter_Blockonomics implements FOSSBilling\InjectionAwareInterfac
     private const PRICE_URL = self::BASE_URL . '/api/price';
     private const WALLETS_URL = self::BASE_URL . '/api/v2/wallets';
     private const STORES_URL = self::BASE_URL . '/api/v2/stores?wallets=true';
-    private const STORE_URL = self::BASE_URL . '/api/v2/stores';
 
     /** Coins this gateway offers the buyer. */
     private const SUPPORTED = ['BTC', 'USDT'];
@@ -67,15 +66,18 @@ class Payment_Adapter_Blockonomics implements FOSSBilling\InjectionAwareInterfac
             'supports_subscriptions' => false,
             'description' => self::renderSetupDescription(),
             'logo' => [
+                // Square Blockonomics mark; the invoice page renders it as a background-image
+                // at exactly these dimensions inside the core gateway tile.
                 'logo' => 'blockonomics.png',
-                'height' => '30px',
-                'width' => '30px',
+                'height' => '48px',
+                'width' => '48px',
             ],
             'form' => [
                 'api_key' => [
                     'text', [
                         'label' => 'Blockonomics API Key',
-                        'description' => 'Get from Blockonomics → Merchants (Dashboard) → Stores.',
+                        // Field descriptions render as Markdown (html_input=escape), so use MD link syntax.
+                        'description' => 'Get from your [Blockonomics Dashboard](https://www.blockonomics.co/dashboard#/store).',
                     ],
                 ],
             ],
@@ -91,11 +93,12 @@ class Payment_Adapter_Blockonomics implements FOSSBilling\InjectionAwareInterfac
         }
 
         return <<<HTML
-<div class="blockonomics-admin-setup" data-blockonomics-setup style="display:none;margin-top:12px">
+<div class="blockonomics-admin-setup" data-blockonomics-setup style="display:none;margin-top:16px">
     <style>
     .blockonomics-callback-row { display: flex; gap: 8px; align-items: stretch; margin-top: 4px; }
     .blockonomics-callback-row input { flex: 1 1 auto; min-width: 0; font-family: monospace; font-size: 12px; }
-    .blockonomics-setup-results { margin-top: 10px; display: none; }
+    .blockonomics-setup-results { margin-top: 10px; display: none; padding: .6em .8em; border-radius: 6px; background: rgba(98,105,118,.06); border-left: 3px solid #8a94a6; }
+    .blockonomics-setup-results p { margin: 0; }
     .blockonomics-setup-results > div { margin: 3px 0; }
     .blockonomics-setup-results ul { margin: 4px 0 0 18px; padding: 0; }
     .blockonomics-setup-note { margin: 8px 0 0; }
@@ -103,12 +106,11 @@ class Payment_Adapter_Blockonomics implements FOSSBilling\InjectionAwareInterfac
     </style>
     <button type="button" class="btn btn-primary" data-blockonomics-test>Test Setup</button>
     <div class="blockonomics-setup-results" data-blockonomics-results aria-live="polite"></div>
-    <label class="form-label" for="blockonomics-callback-url" style="margin:12px 0 0">Callback URL</label>
+    <label class="form-label" for="blockonomics-callback-url" style="margin:16px 0 0">Callback URL</label>
     <div class="blockonomics-callback-row">
         <input id="blockonomics-callback-url" class="form-control" data-blockonomics-callback readonly value="Loading callback URL..." autocomplete="off">
         <button type="button" class="btn btn-outline-secondary" data-blockonomics-copy>Copy</button>
     </div>
-    <div class="form-hint">Your Blockonomics store's HTTP Callback — Test Setup registers it automatically.</div>
     {$manualNote}
     <script>
     (function () {
@@ -176,30 +178,44 @@ class Payment_Adapter_Blockonomics implements FOSSBilling\InjectionAwareInterfac
 
             root.style.display = '';
 
+            // The core "IPN Callback URL" (ipn.php) field is not used by this adapter — our
+            // callback goes through the module's guest endpoint above — and having two
+            // "callback URL" fields confuses setup. Hide the core one (its own grid column).
+            try {
+                var ipnInput = document.getElementById('gateway_callback');
+                if (ipnInput && /ipn\.php/.test(ipnInput.value)) {
+                    var ipnWrap = ipnInput.closest('.col-12') || ipnInput.parentElement;
+                    if (ipnWrap) { ipnWrap.style.display = 'none'; }
+                }
+            } catch (e) { /* cosmetic only */ }
+
             function clear(node) {
                 while (node.firstChild) { node.removeChild(node.firstChild); }
             }
 
             function showMessage(message) {
-                results.style.display = '';
+                // 'block', not '': clearing the inline style would fall back to the
+                // stylesheet's display:none and render the feedback invisibly.
+                results.style.display = 'block';
+                results.style.borderLeftColor = '#8a94a6';
                 clear(results);
                 var p = document.createElement('p');
                 p.textContent = message;
                 results.appendChild(p);
             }
 
-            function appendSection(title, items) {
-                if (!items || !items.length) { return; }
-                var heading = document.createElement('strong');
-                heading.textContent = title;
-                results.appendChild(heading);
-                var list = document.createElement('ul');
-                items.forEach(function (item) {
-                    var li = document.createElement('li');
-                    li.textContent = String(item);
-                    list.appendChild(li);
-                });
-                results.appendChild(list);
+            // Render one message line, turning a single [label](https://www.blockonomics.co/…)
+            // Markdown link into an anchor. The href group is pinned to blockonomics.co and
+            // everything is built from text nodes — no HTML travels through this path.
+            function renderErrorLine(el, message) {
+                var m = String(message).match(/^(.*)\[([^\]]+)\]\((https:\/\/www\.blockonomics\.co\/[^\s)]*)\)(.*)$/);
+                if (!m) { el.textContent = String(message); return; }
+                el.appendChild(document.createTextNode(m[1]));
+                var a = document.createElement('a');
+                a.href = m[3]; a.target = '_blank'; a.rel = 'noopener';
+                a.textContent = m[2];
+                el.appendChild(a);
+                el.appendChild(document.createTextNode(m[4]));
             }
 
             function unwrap(response) {
@@ -294,7 +310,17 @@ class Payment_Adapter_Blockonomics implements FOSSBilling\InjectionAwareInterfac
                         document.execCommand('copy');
                         resolve();
                     });
-                copied.then(function () { showMessage('Callback URL copied.'); });
+                copied.then(function () {
+                    copyButton.textContent = 'Copied ✓';
+                    copyButton.classList.add('btn-success');
+                    copyButton.classList.remove('btn-outline-secondary');
+                    if (copyButton.dataset.resetTimer) { clearTimeout(parseInt(copyButton.dataset.resetTimer, 10)); }
+                    copyButton.dataset.resetTimer = String(setTimeout(function () {
+                        copyButton.textContent = 'Copy';
+                        copyButton.classList.remove('btn-success');
+                        copyButton.classList.add('btn-outline-secondary');
+                    }, 2000));
+                });
             });
 
             function findGatewayId() {
@@ -312,24 +338,14 @@ class Payment_Adapter_Blockonomics implements FOSSBilling\InjectionAwareInterfac
             }
 
             function renderSetupResult(result) {
-                results.style.display = '';
-                clear(results);
-                var message = document.createElement('div');
-                message.style.fontWeight = '600';
-                message.textContent = result && result.message ? String(result.message) : 'Test Setup complete.';
-                results.appendChild(message);
-                if (result && result.note) {
-                    var note = document.createElement('div');
-                    note.style.color = '#b26205';
-                    note.textContent = String(result.note);
-                    results.appendChild(note);
-                }
+                results.style.display = 'block';
+                var errors = (result && result.error) || [];
                 var cryptos = (result && result.cryptos) || [];
-                if (result && result.store && result.store.name) {
+                var allOk = errors.length === 0 && cryptos.length > 0 && cryptos.every(function (c) { return c.ok; });
+                results.style.borderLeftColor = errors.length ? '#d63939' : (allOk ? '#2fb344' : '#b26205');
+                clear(results);
+                if (cryptos.length) {
                     var storeLine = document.createElement('div');
-                    var storeLabel = document.createElement('span');
-                    storeLabel.textContent = 'Store: ' + result.store.name + ' ';
-                    storeLine.appendChild(storeLabel);
                     cryptos.forEach(function (c) {
                         var mark = document.createElement('span');
                         mark.textContent = String(c.code || '').toUpperCase() + ' ' + (c.ok ? '✔' : '✖');
@@ -349,22 +365,31 @@ class Payment_Adapter_Blockonomics implements FOSSBilling\InjectionAwareInterfac
                         results.appendChild(detail);
                     }
                 });
-                appendSection('Actions taken', result ? result.actions_taken : []);
-                appendSection('Needs attention', result ? result.error : []);
+                errors.forEach(function (message) {
+                    var line = document.createElement('div');
+                    renderErrorLine(line, message);
+                    results.appendChild(line);
+                });
                 if (result && result.callback_url) {
                     input.value = result.callback_url;
                     copyButton.disabled = false;
                 }
             }
 
+            // Captured at page load; Test Setup only ever tests the SAVED key, so an edited
+            // field must be saved first (Update Gateway reloads the page, re-capturing this).
+            var savedApiKey = findApiKeyInput() ? findApiKeyInput().value : '';
+
             testButton.addEventListener('click', function () {
                 var keyInput = findApiKeyInput();
-                var apiKey = keyInput ? keyInput.value : '';
+                if (keyInput && keyInput.value !== savedApiKey) {
+                    showMessage('Click Update Gateway to save settings and then hit Test Setup');
+                    return;
+                }
                 testButton.disabled = true;
                 showMessage('Testing Blockonomics setup...');
                 adminPost('blockonomics/test_setup', {
-                    gateway_id: findGatewayId(),
-                    api_key: apiKey
+                    gateway_id: findGatewayId()
                 }).then(renderSetupResult).catch(function () {
                     showMessage('Test Setup failed before it could complete. Check that the Blockonomics module is active and your admin session is still valid.');
                 }).then(function () {
@@ -387,27 +412,82 @@ HTML;
     public function getHtml($api_admin, $invoice_id, $subscription): string
     {
         $this->ensureInstalled();
+        $this->ensureSchema();
 
         $invoice = $this->di['db']->getExistingModelById('Invoice', $invoice_id, 'Invoice not found');
+        $existingOrder = $this->di['db']->findOne(
+            'blockonomics_order',
+            'invoice_id = ? AND status IS NOT NULL ORDER BY id DESC',
+            [(int) $invoice->id]
+        );
+        $waitingHtml = $existingOrder && self::awaitingConfirmation($existingOrder)
+            ? $this->renderWaitingView($invoice, $existingOrder)
+            : '';
+        $underpaidBanner = ($existingOrder
+            && self::isUnderpaidOrder($existingOrder)
+            && $invoice->status === Model_Invoice::STATUS_UNPAID)
+                ? '<div class="blk-banner">Your earlier payment was less than the invoice total and has been credited to your account. Choose a method below to pay the full amount — your earlier payment stays available as account credit.</div>'
+                : '';
+        $chooserHidden = $waitingHtml !== '' ? 'style="display:none"' : '';
+        $waitingTemplate = $this->renderWaitingView($invoice, null);
+        $assetsUrl = htmlspecialchars(SYSTEM_URL . 'modules/Blockonomics/assets', ENT_QUOTES);
         $hashJson = json_encode((string) $invoice->hash);
         $invoiceUrlJson = json_encode($this->di['tools']->url('invoice/' . $invoice->hash));
         $assetsJson = json_encode(SYSTEM_URL . 'modules/Blockonomics/assets');
         $apiBaseJson = json_encode(SYSTEM_URL . 'api/guest/blockonomics/');
 
+
         return <<<HTML
-<div class="blockonomics-pay" style="max-width:480px;margin:0 auto;text-align:center">
-    <p>Pay with Blockonomics — choose your cryptocurrency:</p>
-    <div id="blk-chooser" style="display:flex;gap:.75em;justify-content:center;margin:1em 0">
-        <button type="button" class="btn btn-outline-primary blk-coin" data-crypto="BTC" style="flex:1;max-width:180px;padding:1em">
-            <strong>Bitcoin</strong><br><span class="text-muted">BTC</span>
-        </button>
-        <button type="button" class="btn btn-outline-primary blk-coin" data-crypto="USDT" style="flex:1;max-width:180px;padding:1em">
-            <strong>Tether</strong><br><span class="text-muted">USDT (ERC-20)</span>
-        </button>
+<div class="blockonomics-pay" style="max-width:440px;margin:0 auto;text-align:center">
+    <style>
+    .blk-card{border:1px solid var(--bs-border-color,#e6e7e9);border-radius:12px;overflow:hidden;background:var(--bs-body-bg,#fff)}
+    .blk-bar{display:flex;align-items:center;justify-content:center;gap:.55em;padding:.7em 1em;font-weight:600;font-size:.95em;background:#188433;color:#fff}
+    .blk-bar[data-mode="neutral"]{background:var(--bs-tertiary-bg,#f2f4f6);color:var(--bs-body-color,#1d273b)}
+    .blk-bar[data-mode="warn"]{background:#b26205;color:#fff}
+    .blk-bar[data-mode="error"]{background:#d63939;color:#fff}
+    .blk-spin{width:.9em;height:.9em;border:2px solid currentColor;border-top-color:transparent;border-radius:50%;animation:blkspin .9s linear infinite;flex:none;opacity:.9}
+    @keyframes blkspin{to{transform:rotate(360deg)}}
+    .blk-body{padding:1em 1.25em 1.15em}
+    .blk-row{display:flex;justify-content:space-between;align-items:center;gap:1em;padding:.6em 0;border-bottom:1px solid var(--bs-border-color,#eceef0);font-size:.95em}
+    .blk-muted{color:var(--bs-secondary-color,#68727f)}
+    .blk-mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+    .blk-label{display:block;text-align:left;font-size:.75em;letter-spacing:.04em;text-transform:uppercase;margin:1em 0 .3em;color:var(--bs-secondary-color,#68727f)}
+    .blk-field{border:1px solid var(--bs-border-color,#e6e7e9);border-radius:8px;padding:.5em .6em;display:flex;align-items:center;gap:.5em;background:var(--bs-tertiary-bg,#f8f9fa)}
+    .blk-field > span{flex:1;min-width:0;overflow-wrap:anywhere;text-align:left;font-size:.86em}
+    .blk-copy{border:0;background:transparent;cursor:pointer;color:var(--bs-secondary-color,#68727f);padding:.3em;border-radius:6px;flex:none;line-height:0}
+    .blk-copy:hover{background:var(--bs-border-color,#e6e7e9)}
+    .blk-copy .blk-ic-check{display:none;color:#188433}
+    .blk-copy.blk-copied .blk-ic-copy{display:none}
+    .blk-copy.blk-copied .blk-ic-check{display:inline}
+    .blk-qr{background:#fff;border:1px solid var(--bs-border-color,#e6e7e9);border-radius:10px;padding:12px;display:inline-block;line-height:0;margin:.9em auto .2em}
+    #blk-chooser{display:flex;gap:.75em;justify-content:center;margin:.6em 0 .2em}
+    .blk-coin{flex:1;max-width:170px;padding:.9em .5em;border:1px solid var(--bs-border-color,#dfe3e8);border-radius:10px;background:var(--bs-body-bg,#fff);cursor:pointer;display:flex;flex-direction:column;align-items:center;gap:.35em;color:inherit;transition:border-color .15s,box-shadow .15s}
+    .blk-coin:hover{border-color:#188433;box-shadow:0 1px 6px rgba(24,132,51,.18)}
+    .blk-coin .blk-muted{font-size:.78em}
+    .blk-note{font-size:.8em;margin:.8em 0 0}
+    .blk-banner{background:#fff8e6;color:#664d03;padding:.65em .8em;border-radius:8px;margin:.4em 0 .8em;font-size:.88em;text-align:left}
+    .blk-change{font-weight:400;font-size:.82em;margin-left:.5em}
+    </style>
+    <div class="blk-card">
+        <div class="blk-bar" id="blk-bar" data-mode="neutral"><span class="blk-spin" id="blk-bar-spin" style="display:none"></span><span id="blk-bar-text">Select payment currency</span></div>
+        <div class="blk-body">
+            {$underpaidBanner}
+            <div id="blk-chooser" {$chooserHidden}>
+                <button type="button" class="blk-coin" data-crypto="BTC">
+                    <img src="{$assetsUrl}/btc.svg" width="38" height="38" alt="">
+                    <span class="blk-muted">BTC</span>
+                </button>
+                <button type="button" class="blk-coin" data-crypto="USDT">
+                    <img src="{$assetsUrl}/usdt.svg" width="38" height="38" alt="">
+                    <span class="blk-muted">USDT · ERC-20</span>
+                </button>
+            </div>
+            <div id="blk-view">{$waitingHtml}</div>
+            <p id="blk-loading" class="blk-muted" style="display:none;margin:.8em 0 0">Generating payment details…</p>
+            <p id="blk-error" style="color:#d63939;margin:.5em 0 0"></p>
+        </div>
     </div>
-    <div id="blk-view"></div>
-    <p id="blk-loading" style="display:none">Generating payment details…</p>
-    <p id="blk-error" style="color:#b02a37"></p>
+    <template id="blk-waiting-tpl">{$waitingTemplate}</template>
     <script>
     (function () {
         var INVOICE_HASH = {$hashJson};
@@ -417,6 +497,86 @@ HTML;
         var view = document.getElementById('blk-view');
         var loading = document.getElementById('blk-loading');
         var errEl = document.getElementById('blk-error');
+        var chooser = document.getElementById('blk-chooser');
+        var bar = document.getElementById('blk-bar');
+        var barText = document.getElementById('blk-bar-text');
+        var barSpin = document.getElementById('blk-bar-spin');
+        var payRoot = document.querySelector('.blockonomics-pay');
+        var waitingPoll = null;
+        var btcDetectPoll = null;
+
+        // The banklink template renders an unconditional "Processing Payment... / Thank you for
+        // your patience." card header above the gateway HTML; our card has its own status bar,
+        // so drop the core one (this is the only card on the banklink page).
+        (function () {
+            var coreCard = payRoot ? payRoot.closest('.card') : null;
+            var coreHeader = coreCard ? coreCard.querySelector(':scope > .card-header') : null;
+            if (coreHeader) { coreHeader.remove(); }
+        })();
+
+        function setBar(mode, text, spin) {
+            if (!bar) { return; }
+            bar.setAttribute('data-mode', mode);
+            barText.textContent = text;
+            barSpin.style.display = spin ? '' : 'none';
+        }
+
+        function showChooser() {
+            stopState(waitingPoll);
+            stopState(btcDetectPoll);
+            view.innerHTML = '';
+            errEl.textContent = '';
+            chooser.style.display = '';
+            setBar('neutral', 'Select payment currency', false);
+        }
+
+        function showError(message) {
+            errEl.textContent = String(message || '');
+        }
+
+        // Copy buttons ([data-copy]) and the "change" link, on markup injected later too.
+        payRoot.addEventListener('click', function (e) {
+            var change = e.target.closest('[data-blk-change]');
+            if (change) {
+                e.preventDefault();
+                showChooser();
+                return;
+            }
+            var btn = e.target.closest('.blk-copy');
+            if (!btn) { return; }
+            var value = btn.getAttribute('data-copy') || '';
+            if (!value) { return; }
+            var copied = navigator.clipboard && navigator.clipboard.writeText
+                ? navigator.clipboard.writeText(value)
+                : new Promise(function (resolve) {
+                    var ta = document.createElement('textarea');
+                    ta.value = value;
+                    document.body.appendChild(ta);
+                    ta.select();
+                    try { document.execCommand('copy'); } catch (err) {}
+                    document.body.removeChild(ta);
+                    resolve();
+                });
+            copied.then(function () {
+                btn.classList.add('blk-copied');
+                setTimeout(function () { btn.classList.remove('blk-copied'); }, 1600);
+            });
+        });
+        var DAY = 24 * 60 * 60 * 1000;
+        var FIRST_WINDOW = 10 * 60 * 1000;
+        var CONFIRMED_STALL = 3 * 60 * 1000;
+
+        var TEXT = {
+            DETECTED: 'Payment detected ✔. You can safely close this page, your invoice will be marked paid upon 2 confirmations.',
+            USDT_SUBMITTED: 'Payment submitted ✔. Waiting for the network to verify your transaction…',
+            USDT_STALLED: "We haven't been able to verify your transaction yet. If your wallet shows the transfer as failed or cancelled, you can start the payment again.",
+            CONFIRMED_PAID: 'Payment confirmed ✔. Your invoice has been paid, taking you to your invoice…',
+            UNDERPAID: 'Your payment confirmed, but it was less than the invoice total (this can happen with exchange-rate movement or wallet fees). The amount received has been credited to your account. Open the invoice to complete the payment.',
+            FINALIZING_STALLED: "Your payment is confirmed on the network, but the invoice hasn't updated yet. It's safe to close this page. If it isn't marked paid within a few minutes, please contact support with Txn ID ",
+            NOT_PAYABLE: 'This invoice can no longer be paid.',
+            CONNECTION: 'Connection issue — retrying…',
+            STOPPED: 'Still pending — please check your invoice later.'
+        };
 
         // Per-coin scripts, loaded only when that coin is picked. BTC: bundled QR lib (MIT)
         // + reconnecting-websocket for live payment detection. USDT: Blockonomics' hosted
@@ -433,7 +593,9 @@ HTML;
                 s = document.createElement('script');
                 s.src = src; s.setAttribute('data-blk-src', src);
                 s.onload = function () { s.dataset.loaded = '1'; resolve(); };
-                s.onerror = reject;
+                // Remove the tag on failure so a retry re-creates it instead of waiting
+                // forever on a cached tag whose error event has already fired.
+                s.onerror = function () { s.remove(); reject(new Error('script load failed: ' + src)); };
                 document.head.appendChild(s);
             });
         }
@@ -446,25 +608,266 @@ HTML;
             }).then(function (r) { return r.json(); });
         }
 
+        function unwrap(response) {
+            if (response && response.error) {
+                throw new Error((response.error && response.error.message) || 'FossBilling API error');
+            }
+            return response && Object.prototype.hasOwnProperty.call(response, 'result') ? response.result : response;
+        }
+
+        function currentWaiting() {
+            return view ? view.querySelector('[data-blk-waiting]') : null;
+        }
+
+        function setSubstatus(text) {
+            var root = currentWaiting();
+            var el = root ? root.querySelector('[data-blk-substatus]') : null;
+            if (el) { el.textContent = text || ''; }
+        }
+
+        function clear(node) {
+            while (node.firstChild) { node.removeChild(node.firstChild); }
+        }
+
+        function appendInvoiceLink(node) {
+            node.appendChild(document.createTextNode(' '));
+            var link = document.createElement('a');
+            link.href = INVOICE_URL;
+            link.textContent = 'View invoice';
+            node.appendChild(link);
+        }
+
+        function setStatusText(text, withInvoiceLink) {
+            var root = currentWaiting();
+            var el = root ? root.querySelector('[data-blk-status]') : null;
+            if (!el) { return; }
+            clear(el);
+            el.appendChild(document.createTextNode(text));
+            if (withInvoiceLink) { appendInvoiceLink(el); }
+        }
+
+        function setSubmittedStalled() {
+            var root = currentWaiting();
+            var el = root ? root.querySelector('[data-blk-status]') : null;
+            if (!el) { return; }
+            clear(el);
+            el.appendChild(document.createTextNode(TEXT.USDT_STALLED + ' '));
+            var btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'btn btn-outline-primary';
+            btn.textContent = 'Start payment again';
+            btn.addEventListener('click', function () { window.location.reload(); });
+            el.appendChild(btn);
+        }
+
+        function shortTxid(txid) {
+            txid = String(txid || '');
+            return txid.length > 20 ? txid.substring(0, 10) + '…' + txid.substring(txid.length - 6) : txid;
+        }
+
+        function stopState(state) {
+            if (!state) { return; }
+            state.active = false;
+            if (state.timer) { clearTimeout(state.timer); }
+        }
+
+        function nextDelay(state) {
+            if (state.intervalOverride) { return state.intervalOverride; }
+            return Date.now() - state.startedAt < FIRST_WINDOW ? 10000 : 30000;
+        }
+
+        function scheduleWaiting(state, delay) {
+            if (!state || !state.active) { return; }
+            if (Date.now() - state.startedAt >= DAY) {
+                setStatusText(TEXT.STOPPED, true);
+                stopState(state);
+                return;
+            }
+            if (state.timer) { clearTimeout(state.timer); }
+            state.timer = setTimeout(function () { runWaitingPoll(state); }, delay);
+        }
+
+        function handlePaymentStatus(state, data) {
+            var root = currentWaiting();
+            if (!root || String(root.getAttribute('data-order-id') || '') !== String(state.orderId)) {
+                stopState(state);
+                return;
+            }
+
+            var required = parseInt(data && data.required, 10);
+            required = required > 0 ? required : 2;
+            var status = data && data.status !== null && typeof data.status !== 'undefined' ? parseInt(data.status, 10) : null;
+            var crypto = data && data.crypto ? String(data.crypto) : (root.getAttribute('data-crypto') || '');
+            if (crypto) { root.setAttribute('data-crypto', crypto); }
+
+            if (data && data.paid) {
+                setBar('paid', '✓ Payment confirmed', false);
+                setStatusText(TEXT.CONFIRMED_PAID, false);
+                stopState(state);
+                setTimeout(function () { window.location = INVOICE_URL; }, 1500);
+                return;
+            }
+            if (data && data.payable === false) {
+                setBar('error', 'Invoice can no longer be paid', false);
+                setStatusText(TEXT.NOT_PAYABLE, true);
+                stopState(state);
+                return;
+            }
+            if (data && data.underpaid) {
+                setBar('warn', 'Payment received — amount was short', false);
+                setStatusText(TEXT.UNDERPAID, true);
+                state.intervalOverride = 60000;
+                scheduleWaiting(state, state.intervalOverride);
+                return;
+            }
+            if (data && data.submitted_only && data.stale) {
+                setBar('warn', 'Transaction not verified yet', false);
+                setSubmittedStalled();
+                state.intervalOverride = 60000;
+                scheduleWaiting(state, state.intervalOverride);
+                return;
+            }
+            if (data && data.submitted_only) {
+                setBar('await', 'Verifying your transaction…', true);
+                setStatusText(TEXT.USDT_SUBMITTED, false);
+                scheduleWaiting(state, nextDelay(state));
+                return;
+            }
+            if (status === null || isNaN(status)) {
+                scheduleWaiting(state, nextDelay(state));
+                return;
+            }
+            if (status < required) {
+                state.confirmedUnpaidSince = null;
+                setBar('await', 'Confirming — ' + status + ' of ' + required, true);
+                setStatusText(TEXT.DETECTED, false);
+                scheduleWaiting(state, nextDelay(state));
+                return;
+            }
+
+            if (!state.confirmedUnpaidSince) { state.confirmedUnpaidSince = Date.now(); }
+            setBar('await', 'Finalizing…', true);
+            setStatusText(TEXT.DETECTED, false);
+            if (Date.now() - state.confirmedUnpaidSince >= CONFIRMED_STALL) {
+                setStatusText(TEXT.FINALIZING_STALLED + (shortTxid(root.getAttribute('data-txid')) || 'unavailable') + '.', false);
+            }
+            scheduleWaiting(state, 30000);
+        }
+
+        function runWaitingPoll(state) {
+            if (!state || !state.active) { return; }
+            if (document.hidden) { return; }
+            post('payment_status', { invoice_hash: INVOICE_HASH, order_id: state.orderId }).then(unwrap).then(function (data) {
+                state.failures = 0;
+                setSubstatus('');
+                handlePaymentStatus(state, data || {});
+            }).catch(function () {
+                state.failures++;
+                if (state.failures >= 3) { setSubstatus(TEXT.CONNECTION); }
+                scheduleWaiting(state, 30000);
+            });
+        }
+
+        function startWaitingPoll(orderId) {
+            if (!orderId) { return; }
+            stopState(waitingPoll);
+            stopState(btcDetectPoll);
+            waitingPoll = {
+                active: true,
+                orderId: String(orderId),
+                startedAt: Date.now(),
+                failures: 0,
+                intervalOverride: null,
+                confirmedUnpaidSince: null,
+                timer: null
+            };
+            runWaitingPoll(waitingPoll);
+        }
+
+        function swapToWaiting(orderId, crypto, txid) {
+            var tpl = document.getElementById('blk-waiting-tpl');
+            if (!tpl || !view) { return null; }
+            var fragment = tpl.content ? tpl.content.cloneNode(true) : document.createRange().createContextualFragment(tpl.innerHTML);
+            var root = fragment.querySelector('[data-blk-waiting]');
+            if (!root) { return null; }
+            root.setAttribute('data-order-id', String(orderId || ''));
+            root.setAttribute('data-crypto', crypto || 'BTC');
+            if (txid) { root.setAttribute('data-txid', txid); }
+            view.innerHTML = '';
+            view.appendChild(fragment);
+            return currentWaiting();
+        }
+
+        function startBtcDetectionPoll(orderId) {
+            if (!orderId) { return; }
+            stopState(btcDetectPoll);
+            btcDetectPoll = { active: true, orderId: String(orderId), timer: null };
+            function run() {
+                if (!btcDetectPoll || !btcDetectPoll.active) { return; }
+                if (btcDetectPoll.timer) { clearTimeout(btcDetectPoll.timer); }
+                if (document.hidden) { return; }
+                post('payment_status', { invoice_hash: INVOICE_HASH, order_id: orderId }).then(unwrap).then(function (data) {
+                    if (data && data.status !== null && typeof data.status !== 'undefined') {
+                        stopState(btcDetectPoll);
+                        setBar('await', 'Payment detected — confirming…', true);
+                        swapToWaiting(orderId, data.crypto || 'BTC', '');
+                        startWaitingPoll(orderId);
+                        return;
+                    }
+                    btcDetectPoll.timer = setTimeout(run, 30000);
+                }).catch(function () {
+                    btcDetectPoll.timer = setTimeout(run, 30000);
+                });
+            }
+            btcDetectPoll.run = run;
+            btcDetectPoll.timer = setTimeout(run, 30000);
+        }
+
+        document.addEventListener('visibilitychange', function () {
+            if (document.hidden) { return; }
+            if (waitingPoll && waitingPoll.active) { runWaitingPoll(waitingPoll); }
+            if (btcDetectPoll && btcDetectPoll.active && typeof btcDetectPoll.run === 'function') { btcDetectPoll.run(); }
+        });
+
         // After the coin's view HTML is injected: draw the BTC QR and open the live payment
-        // websocket — Blockonomics pushes a message the moment the payment is seen, and the
-        // page forwards to the invoice (mirrors the WHMCS plugin; ~2s lets the callback land).
+        // websocket. Blockonomics pushes a message the moment the payment is seen; then this
+        // page switches to the waiting state and polls our server until the invoice is paid.
         // USDT's <web3-payment> component activates by itself once its script is loaded.
         function activateView() {
+            var waiting = currentWaiting();
+            if (waiting) {
+                chooser.style.display = 'none';
+                setBar('await', waiting.getAttribute('data-submitted') === '1' ? 'Verifying your transaction…' : 'Payment detected — confirming…', true);
+                startWaitingPoll(waiting.getAttribute('data-order-id'));
+                return;
+            }
             var qr = view.querySelector('#blockonomics-qr');
             if (qr && qr.getAttribute('data-uri') && window.QRCode) {
                 qr.innerHTML = '';
-                new QRCode(qr, { text: qr.getAttribute('data-uri'), width: 200, height: 200 });
+                new QRCode(qr, { text: qr.getAttribute('data-uri'), width: 190, height: 190 });
+            }
+            if (view.querySelector('[data-order-id]')) {
+                setBar('await', 'Awaiting payment…', true);
             }
             var sockEl = view.querySelector('[data-socket-addr]');
+            var btcView = view.querySelector('[data-crypto="BTC"][data-order-id]');
             if (sockEl && window.ReconnectingWebSocket) {
                 var ws = new ReconnectingWebSocket('wss://www.blockonomics.co/payment/' + sockEl.getAttribute('data-socket-addr'));
-                ws.onmessage = function () {
+                ws.onmessage = function (event) {
                     ws.close();
-                    var st = view.querySelector('#blk-pay-status');
-                    if (st) { st.innerHTML = '<strong style="color:#198754">✓ Payment detected!</strong> Taking you to your invoice…'; }
-                    setTimeout(function () { window.location = INVOICE_URL; }, 2000);
+                    var txid = '';
+                    try {
+                        var msg = JSON.parse(event && event.data ? event.data : '{}');
+                        txid = msg && msg.txid ? String(msg.txid) : '';
+                    } catch (e) {}
+                    var orderId = btcView ? btcView.getAttribute('data-order-id') : '';
+                    setBar('await', 'Payment detected — confirming…', true);
+                    swapToWaiting(orderId, 'BTC', txid);
+                    startWaitingPoll(orderId);
                 };
+            }
+            if (btcView) {
+                startBtcDetectionPoll(btcView.getAttribute('data-order-id'));
             }
         }
 
@@ -472,23 +875,28 @@ HTML;
             btn.addEventListener('click', function () {
                 var crypto = btn.getAttribute('data-crypto');
                 errEl.textContent = ''; view.innerHTML = ''; loading.style.display = '';
-                document.getElementById('blk-chooser').style.display = 'none';
+                chooser.style.display = 'none';
+                setBar('neutral', 'Preparing your payment…', true);
                 Promise.all(DEPS[crypto].map(loadScript)).then(function () {
                     return post('checkout', { invoice_hash: INVOICE_HASH, crypto: crypto });
                 }).then(function (j) {
                     loading.style.display = 'none';
                     if (j && typeof j.result === 'string') { view.innerHTML = j.result; activateView(); }
                     else {
-                        document.getElementById('blk-chooser').style.display = '';
-                        errEl.textContent = (j && j.error && j.error.message) || 'Could not start checkout. Please try again.';
+                        chooser.style.display = '';
+                        setBar('neutral', 'Select payment currency', false);
+                        showError((j && j.error && j.error.message) || 'Could not start checkout. Please try again.');
                     }
                 }).catch(function () {
                     loading.style.display = 'none';
-                    document.getElementById('blk-chooser').style.display = '';
-                    errEl.textContent = 'Network error. Please try again.';
+                    chooser.style.display = '';
+                    setBar('neutral', 'Select payment currency', false);
+                    showError('Network error. Please try again.');
                 });
             });
         });
+
+        activateView();
     })();
     </script>
 </div>
@@ -506,7 +914,6 @@ HTML;
         if (!in_array($crypto, self::SUPPORTED, true)) {
             throw new Payment_Exception('Unsupported cryptocurrency.');
         }
-
         $this->ensureInstalled();
         $this->ensureSchema();
         $invoiceService = $this->di['mod_service']('Invoice');
@@ -518,10 +925,31 @@ HTML;
         // fresh address.
         $order = $this->getReusableOrder((int) $invoice->id, $crypto, $gatewayId, $confirmations);
 
-        // Re-quote on revisit while no payment has been seen yet (status null): the price may
-        // have moved since the address was issued, and a stale quote silently under/overpays
-        // the merchant. Once a payment is detected (status >= 0) the quote is locked.
-        if ($order && $order->status === null) {
+        if ($order && self::awaitingConfirmation($order)) {
+            $submittedOnly = strtoupper((string) ($order->crypto ?? '')) === 'USDT'
+                && (int) $order->status === 0
+                && (int) ($order->value_satoshi ?? 0) === 0
+                && (string) ($order->txid ?? '') !== '';
+            $updatedAt = strtotime((string) ($order->updated_at ?? ''));
+            if ($submittedOnly && $updatedAt < time() - 2 * 60) {
+                try {
+                    $res = $this->monitorToken((string) $order->txid, 'USDT');
+                    if ((int) ($res['code'] ?? 0) !== 200) {
+                        $this->di['logger']->info('Blockonomics monitor_tx re-arm failed: HTTP ' . ($res['code'] ?? 0) . ' ' . substr((string) ($res['body'] ?? ''), 0, 200));
+                    }
+                } catch (\Throwable $e) {
+                    $this->di['logger']->info('Blockonomics monitor_tx re-arm failed: ' . $e->getMessage());
+                }
+                $order->updated_at = date('Y-m-d H:i:s');
+                $this->di['db']->store($order);
+            }
+
+            return $this->renderWaitingView($invoice, $order);
+        }
+
+        // Re-quote only after 10 minutes; a revisit seconds after broadcast must not re-price
+        // the order into a manufactured underpayment. Once detected (status >= 0), quote is locked.
+        if ($order && $order->status === null && strtotime((string) $order->updated_at) < time() - 600) {
             $price = $this->fetchPrice($invoice->currency, $crypto);
             $order->expected_satoshi = $this->convertFiatToUnits($fiatTotal, $price, $crypto);
             $order->updated_at = date('Y-m-d H:i:s');
@@ -531,7 +959,15 @@ HTML;
         if (!$order) {
             $callbackUrl = $this->getCallbackUrl();              // constant; matches the store callback
             $price = $this->fetchPrice($invoice->currency, $crypto);
-            $address = $this->fetchNewAddress($callbackUrl, $crypto); // NEVER pass reset=1
+            try {
+                $address = $this->fetchNewAddress($callbackUrl, $crypto); // NEVER pass reset=1
+            } catch (Payment_Exception $e) {
+                // Likely a stale coin cache (wallet removed since the last Test Setup run) or a
+                // transient API problem. Log the real error; show the buyer a friendly message.
+                $this->di['logger']->info('Blockonomics: new_address failed for ' . $crypto . ' at checkout: ' . $e->getMessage());
+
+                throw new Payment_Exception('Could not generate new address (this may be a temporary error, please try again). Note to webmaster: run Test Setup in your Blockonomics gateway settings to diagnose.');
+            }
             $expectedUnits = $this->convertFiatToUnits($fiatTotal, $price, $crypto);
 
             $order = $this->di['db']->dispense('blockonomics_order');
@@ -582,11 +1018,20 @@ HTML;
             return;
         }
 
-        // 2. Match our order by address (fallback by txid — this is how USDT resolves, since
-        //    its address is shared, so the order is stored as "<addr>-<invoiceId>").
-        $order = $this->di['db']->findOne('blockonomics_order', 'addr = ?', [$addr]);
-        if (!$order && $txid !== '') {
-            $order = $this->di['db']->findOne('blockonomics_order', 'txid = ?', [$txid]);
+        // 2. Match our order. USDT callbacks (the server sends crypto=USDT) resolve by
+        //    txid only: the shared static USDT address is never an attribution key. BTC
+        //    stays addr-first (per-invoice address), txid as fallback.
+        $isUsdt = strtoupper((string) ($get['crypto'] ?? '')) === 'USDT';
+        if ($isUsdt) {
+            $order = null;
+            if ($txid !== '') {
+                $order = $this->di['db']->findOne('blockonomics_order', 'txid = ?', [$txid]);
+            }
+        } else {
+            $order = $this->di['db']->findOne('blockonomics_order', 'addr = ?', [$addr]);
+            if (!$order && $txid !== '') {
+                $order = $this->di['db']->findOne('blockonomics_order', 'txid = ?', [$txid]);
+            }
         }
         if (!$order) {
             $logger->info('Blockonomics callback: no matching order for addr ' . $addr . ', txid ' . $txid . '.');
@@ -595,17 +1040,26 @@ HTML;
         }
 
         $tx = $this->di['db']->getExistingModelById('Transaction', $id);
+        if ($tx->status === Model_Transaction::STATUS_PROCESSED) {
+            $logger->info('Blockonomics callback: transaction ' . $tx->id . ' already processed, ignoring re-dispatch.');
+
+            return;
+        }
+
         $invoice = $this->di['db']->getExistingModelById('Invoice', $order->invoice_id);
         $invoiceService = $this->di['mod_service']('Invoice');
         $confirmations = self::CONFIRMATIONS;
         $expectedSatoshi = (int) $order->expected_satoshi;
 
         // Record what this callback reported on the order row.
-        $order->txid = $txid;
-        $order->status = $status;
-        $order->value_satoshi = $value;
-        $order->updated_at = date('Y-m-d H:i:s');
-        $this->di['db']->store($order);
+        if ((string) $order->txid !== $txid || $status >= (int) $order->status) {
+            // Older-txid stale unconfirmed IPNs may cosmetically rewind this row; the next real callback self-heals and accounting uses transaction rows.
+            $order->txid = $txid;
+            $order->status = $status;
+            $order->value_satoshi = $value;
+            $order->updated_at = date('Y-m-d H:i:s');
+            $this->di['db']->store($order);
+        }
 
         $tx->invoice_id = $invoice->id;
         $tx->currency = $invoice->currency;
@@ -613,7 +1067,7 @@ HTML;
 
         // 3. Confirmation gate — not enough confirmations yet ⇒ pending, not paid.
         if ($status < $confirmations) {
-            $tx->txn_id = $txid;
+            $tx->txn_id = self::uniqueTxnId($txid, $addr);
             $tx->status = Model_Transaction::STATUS_RECEIVED;
             $tx->updated_at = date('Y-m-d H:i:s');
             $this->di['db']->store($tx);
@@ -621,16 +1075,25 @@ HTML;
             return;
         }
 
-        // 4. Payment-amount handling: an exact (or greater) payment counts as full; any
-        //    shortfall is credited as the actual amount received (a partial credit, not full).
-        if ($value !== $expectedSatoshi) {
-            $satoshiPaid = $value;
-        } else {
-            $satoshiPaid = $expectedSatoshi;
-        }
+        // 4. Payment-amount handling. BTC: full/overpayment credits the received amount
+        //    (surplus becomes client credit — the per-invoice address proves the money was
+        //    for this invoice); shortfall credits proportionally.
+        $satoshiPaid = $value;
         $percentPaid = $expectedSatoshi > 0 ? ($satoshiPaid / $expectedSatoshi * 100) : 0;
         $fiatTotal = $invoiceService->getTotalWithTax($invoice);
         $paymentAmount = round($percentPaid / 100 * $fiatTotal, 2);
+        // USDT: txhash is client-claimable (shared static address) — never credit more than
+        // the invoice. BTC keeps surplus-as-credit: its address is per-invoice and chain-bound.
+        if (strtoupper((string) $order->crypto) === 'USDT' && $expectedSatoshi > 0) {
+            if ($satoshiPaid >= $expectedSatoshi) {
+                $paymentAmount = round($fiatTotal, 2); // exact invoice amount, never more
+            }
+            if ($satoshiPaid > $expectedSatoshi) {
+                $logger->info(sprintf('Blockonomics: USDT overpayment on invoice %d — %d units above expected; credited invoice amount only (tx %s).', $invoice->id, $satoshiPaid - $expectedSatoshi, $txid));
+            } elseif ($satoshiPaid < $expectedSatoshi) {
+                $logger->info(sprintf('Blockonomics: USDT underpayment on invoice %d — received %d of %d expected units; verify the tx belongs to this invoice (tx %s).', $invoice->id, $satoshiPaid, $expectedSatoshi, $txid));
+            }
+        }
 
         // 5. Build a unique transaction id (shared with the guest endpoint so the core's
         //    txn_id-based dedup in create() matches ours exactly).
@@ -638,6 +1101,8 @@ HTML;
         $tx->txn_id = $uniqueTxid;
 
         // 6. Dedup: if a transaction with this unique id is already (being) processed, stop.
+        // Identical callbacks racing onto different rows could both pass this before either claims;
+        // serializing that would require SELECT ... FOR UPDATE on the order row, but Blockonomics does not send identical callbacks milliseconds apart.
         $duplicate = $this->di['db']->findOne(
             'Transaction',
             'txn_id = ? AND status IN (?, ?) AND id != ?',
@@ -653,12 +1118,10 @@ HTML;
         }
 
         // 7. Claim atomically (RECEIVED → PROCESSING) to guard against concurrent double-credit.
-        $tx->status = Model_Transaction::STATUS_RECEIVED;
-        $tx->updated_at = date('Y-m-d H:i:s');
-        $this->di['db']->store($tx);
-
         $transactionService = $this->di['mod_service']('Invoice', 'Transaction');
         if (!$transactionService->claimForProcessing((int) $tx->id)) {
+            $logger->info('Blockonomics callback: transaction ' . $tx->id . ' claim refused, ignoring.');
+
             return;
         }
 
@@ -673,13 +1136,24 @@ HTML;
             'rel_id' => $tx->id,
         ]);
 
-        if (!$invoiceService->isInvoiceTypeDeposit($invoice)) {
+        // Settle only invoices that are still payable. A refunded/canceled invoice (e.g. a
+        // stuck tx confirming after the merchant refunded) must not be flipped back to paid
+        // and have its activation tasks re-run; the funds stay as the account credit above.
+        if ($invoice->status !== Model_Invoice::STATUS_UNPAID) {
+            $logger->info('Blockonomics callback: invoice ' . $invoice->id . ' is ' . $invoice->status . '; funds kept as client credit, settlement skipped.');
+        } elseif (!$invoiceService->isInvoiceTypeDeposit($invoice)) {
             if (!$invoice->approved) {
                 $invoiceService->approveInvoice($invoice, ['use_credits' => false]);
             }
             $invoiceService->payInvoiceWithCredits($invoice);
-        } else {
-            $invoiceService->doBatchPayWithCredits(['client_id' => $client->id]);
+        } elseif ($paymentAmount >= $fiatTotal - 0.01) {
+            // Deposit ("Add funds") invoice: the addFunds above IS the deposit — the invoice's
+            // deposit item ships pre-charged and its executeTask is a no-op, so marking the
+            // invoice paid moves no further money (same pattern as the core Stripe adapter).
+            // Batch-paying other invoices here would silently divert the top-up (verified live:
+            // the deposit stayed unpaid while an unrelated invoice got settled).
+            // An underpaid top-up stays open; the received amount is already account credit.
+            $invoiceService->markAsPaid($invoice);
         }
 
         $tx->amount = $paymentAmount;
@@ -749,6 +1223,69 @@ HTML;
     public static function uniqueTxnId(string $txid, string $addr): string
     {
         return $txid === self::TEST_TXID ? 'TEST-' . $addr : $txid . '-' . $addr;
+    }
+
+    public static function isValidUsdtTxhash(string $h): bool
+    {
+        if (preg_match('/^0x[0-9a-fA-F]{64}$/', $h) === 1) {
+            return true;
+        }
+
+        // Blockonomics' test-mode widget generates txhashes of the form
+        // TestUSDTTxid_<units>_<random>; their server recognizes the prefix on monitor_tx
+        // and simulates the confirming callbacks. On a live store the prefix is inert
+        // (no callback is ever sent), so accepting it grants nothing.
+        return preg_match('/^TestUSDTTxid_\d+_[A-Za-z0-9]+$/', $h) === 1;
+    }
+
+    /** Blockonomics store-testmode addresses (BTC: 1TestBTCAddress…, USDT: 0xTestUSDTAddress…). */
+    public static function isTestAddress(string $addr): bool
+    {
+        return str_starts_with($addr, '1TestBTCAddress') || str_starts_with($addr, '0xTestUSDTAddress');
+    }
+
+    public static function isStaleUnconfirmed($order): bool
+    {
+        $status = $order->status ?? null;
+        if ($status === null || (int) $status !== 0) {
+            return false;
+        }
+
+        $updatedAt = strtotime((string) ($order->updated_at ?? ''));
+        if ($updatedAt === false) {
+            return false;
+        }
+
+        $crypto = strtoupper((string) ($order->crypto ?? ''));
+        $value = (int) ($order->value_satoshi ?? 0);
+        $txid = (string) ($order->txid ?? '');
+        $usdtSubmittedStale = $crypto === 'USDT'
+            && $value === 0
+            && $txid !== ''
+            && $updatedAt < time() - 15 * 60;
+        $droppedTxStale = $updatedAt < time() - 4 * 60 * 60;
+
+        return $usdtSubmittedStale || $droppedTxStale;
+    }
+
+    public static function awaitingConfirmation($order): bool
+    {
+        $status = $order->status ?? null;
+
+        return $status !== null
+            && (int) $status < self::CONFIRMATIONS
+            && !self::isStaleUnconfirmed($order);
+    }
+
+    public static function isUnderpaidOrder($order): bool
+    {
+        $status = (int) ($order->status ?? 0);
+        $value = (int) ($order->value_satoshi ?? 0);
+        $expected = (int) ($order->expected_satoshi ?? 0);
+
+        return $status >= self::CONFIRMATIONS
+            && $value > 0
+            && $value < $expected;
     }
 
     /**
@@ -887,18 +1424,15 @@ HTML;
         }
     }
 
+    /**
+     * Validate the merchant's Blockonomics setup. No auto-fixing: the store must already
+     * exist with the exact callback URL and a wallet attached — otherwise a single plain
+     * message tells the merchant what to do.
+     */
     public function testSetup(): array
     {
         $callbackUrl = $this->getCallbackUrl();
-        $result = [
-            'message' => 'Blockonomics setup needs attention.',
-            'success' => [],
-            'error' => [],
-            'store' => null,
-            'cryptos' => [],
-            'callback_url' => $callbackUrl,
-            'actions_taken' => [],
-        ];
+        $result = ['error' => [], 'cryptos' => [], 'callback_url' => $callbackUrl];
 
         try {
             $walletResult = $this->validateApiKey();
@@ -907,11 +1441,8 @@ HTML;
 
                 return $result;
             }
-            $wallets = $walletResult['wallets'];
-            $result['success'][] = 'API key validated.';
-
-            if (empty($wallets)) {
-                $result['error'][] = 'No Blockonomics wallets were found. Create a wallet in Blockonomics, then run Test Setup again.';
+            if (empty($walletResult['wallets'])) {
+                $result['error'][] = 'Please add a [wallet](https://www.blockonomics.co/dashboard#/wallet)';
 
                 return $result;
             }
@@ -923,74 +1454,21 @@ HTML;
                 return $result;
             }
 
-            $classification = $this->classifyStores($storeResult['stores'], $callbackUrl);
-            $store = $this->selectBestStore($classification['exact']);
-            if ($store) {
-                $result['success'][] = count($classification['exact']) > 1
-                    ? 'Found multiple exact callback matches; selected the best configured store.'
-                    : 'Found a store with the exact Blockonomics callback URL.';
-            } elseif (!empty($classification['partial'])) {
-                $store = $this->selectBestStore($classification['partial']);
-                $updated = $this->updateStoreCallback($store, $callbackUrl);
-                if (!$updated['ok']) {
-                    $result['error'][] = $updated['error'];
+            $store = $this->findExactMatchingStore($storeResult['stores'], $callbackUrl);
+            if (!$store) {
+                $result['error'][] = 'Please add a Store on [Blockonomics Dashboard](https://www.blockonomics.co/dashboard#/store) with the callback URL shown below';
 
-                    return $result;
-                }
-                $store = $updated['store'];
-                $result['actions_taken'][] = 'Updated a Blockonomics store callback URL to the FossBilling callback URL.';
-            } else {
-                $created = $this->createStore($callbackUrl);
-                if (!$created['ok']) {
-                    $result['error'][] = $created['error'];
-
-                    return $result;
-                }
-                $store = $created['store'];
-                $result['actions_taken'][] = 'Created a Blockonomics store for FossBilling.';
-            }
-
-            if (empty($store->wallets)) {
-                if (count($wallets) === 1) {
-                    $attached = $this->attachWallet($store, $wallets[0]);
-                    if (!$attached['ok']) {
-                        $result['error'][] = $attached['error'];
-
-                        return $result;
-                    }
-                    $store = $attached['store'];
-                    $result['actions_taken'][] = 'Attached the only available wallet to the Blockonomics store.';
-                } else {
-                    $result['error'][] = 'The selected store has no wallet attached, and this API key has multiple wallets. Attach the correct wallet in Blockonomics, then run Test Setup again.';
-                    $result['store'] = $this->summarizeStore($store, []);
-
-                    return $result;
-                }
+                return $result;
             }
 
             $enabledCryptos = $this->getEnabledCryptos($store);
-            $result['store'] = $this->summarizeStore($store, $enabledCryptos);
             if (empty($enabledCryptos)) {
-                $result['error'][] = 'No payment methods are enabled on the selected Blockonomics store.';
+                $result['error'][] = 'Please attach a [wallet](https://www.blockonomics.co/dashboard#/store) to your store';
 
                 return $result;
             }
 
             $result['cryptos'] = $this->testCryptos($enabledCryptos);
-            if (empty($result['cryptos'])) {
-                $result['error'][] = 'No BTC or USDT payment method is enabled on the selected Blockonomics store.';
-
-                return $result;
-            }
-
-            if (empty($result['error'])) {
-                $okCount = count(array_filter($result['cryptos'], static fn (array $c): bool => $c['ok']));
-                if ($okCount === count($result['cryptos'])) {
-                    $result['message'] = 'Blockonomics setup looks ready.';
-                } elseif ($okCount > 0) {
-                    $result['message'] = 'Blockonomics setup is working — some payment methods need attention.';
-                }
-            }
         } catch (\Throwable $e) {
             $result['error'][] = $e->getMessage();
         }
@@ -1002,7 +1480,7 @@ HTML;
     {
         $res = $this->httpRequest('GET', self::WALLETS_URL, $this->apiHeaders());
         if ($res['code'] === 401) {
-            return ['ok' => false, 'wallets' => [], 'error' => 'API key is incorrect.'];
+            return ['ok' => false, 'wallets' => [], 'error' => 'API Key is incorrect.'];
         }
         if ($res['code'] !== 200) {
             return ['ok' => false, 'wallets' => [], 'error' => 'Could not verify the API key: ' . $this->apiErrorMessage($res)];
@@ -1020,7 +1498,7 @@ HTML;
     {
         $res = $this->httpRequest('GET', self::STORES_URL, $this->apiHeaders());
         if ($res['code'] === 401) {
-            return ['ok' => false, 'stores' => [], 'error' => 'API key is incorrect.'];
+            return ['ok' => false, 'stores' => [], 'error' => 'API Key is incorrect.'];
         }
         if ($res['code'] !== 200) {
             return ['ok' => false, 'stores' => [], 'error' => 'Could not fetch Blockonomics stores: ' . $this->apiErrorMessage($res)];
@@ -1034,24 +1512,14 @@ HTML;
         return ['ok' => true, 'stores' => $data->data, 'error' => null];
     }
 
-    public function classifyStores(array $stores, string $callbackUrl): array
-    {
-        $matches = ['exact' => [], 'partial' => []];
-        foreach ($stores as $store) {
-            $storeCallback = (string) ($store->http_callback ?? '');
-            if ($storeCallback === $callbackUrl) {
-                $matches['exact'][] = $store;
-            } elseif ($this->isSafePartialCallback($storeCallback, $callbackUrl)) {
-                $matches['partial'][] = $store;
-            }
-        }
-
-        return $matches;
-    }
-
     public function findExactMatchingStore(array $stores, string $callbackUrl): ?object
     {
-        return $this->selectBestStore($this->classifyStores($stores, $callbackUrl)['exact']);
+        $exact = array_values(array_filter(
+            $stores,
+            static fn ($store): bool => (string) ($store->http_callback ?? '') === $callbackUrl
+        ));
+
+        return $this->selectBestStore($exact);
     }
 
     public function selectBestStore(array $stores): ?object
@@ -1084,83 +1552,6 @@ HTML;
         }
 
         return $score;
-    }
-
-    public function createStore(string $callbackUrl): array
-    {
-        $res = $this->httpRequest(
-            'POST',
-            self::STORE_URL,
-            $this->apiHeaders(),
-            (string) json_encode(['name' => 'FOSSBilling Blockonomics', 'http_callback' => $callbackUrl])
-        );
-        if (!in_array($res['code'], [200, 201], true)) {
-            return ['ok' => false, 'store' => null, 'error' => 'Could not create a Blockonomics store: ' . $this->apiErrorMessage($res)];
-        }
-
-        $store = $this->storeFromResponse($res);
-        if (!$store) {
-            return ['ok' => false, 'store' => null, 'error' => 'Blockonomics did not return the created store.'];
-        }
-
-        return ['ok' => true, 'store' => $store, 'error' => null];
-    }
-
-    public function updateStoreCallback(object $store, string $callbackUrl): array
-    {
-        $storeId = $this->storeId($store);
-        if ($storeId === null) {
-            return ['ok' => false, 'store' => $store, 'error' => 'Could not update the matching store because it has no id.'];
-        }
-
-        $res = $this->httpRequest(
-            'POST',
-            self::STORE_URL . '/' . rawurlencode((string) $storeId),
-            $this->apiHeaders(),
-            (string) json_encode([
-                'name' => (string) ($store->name ?? 'FOSSBilling Blockonomics'),
-                'http_callback' => $callbackUrl,
-            ])
-        );
-        if ($res['code'] !== 200) {
-            return ['ok' => false, 'store' => $store, 'error' => 'Could not update the Blockonomics store callback: ' . $this->apiErrorMessage($res)];
-        }
-
-        // Keep the original store object: it came from GET /stores?wallets=true and carries the
-        // wallets array, which the update response does not. Just record the new callback on it.
-        $store->http_callback = $callbackUrl;
-
-        return ['ok' => true, 'store' => $store, 'error' => null];
-    }
-
-    public function attachWallet(object $store, object $wallet): array
-    {
-        $storeId = $this->storeId($store);
-        $walletId = $this->walletId($wallet);
-        if ($storeId === null || $walletId === null) {
-            return ['ok' => false, 'store' => $store, 'error' => 'Could not attach the wallet because the store or wallet id is missing.'];
-        }
-
-        $res = $this->httpRequest(
-            'POST',
-            self::STORE_URL . '/' . rawurlencode((string) $storeId) . '/wallets',
-            $this->apiHeaders(),
-            (string) json_encode(['wallet_id' => $walletId])
-        );
-        if ($res['code'] !== 200) {
-            return ['ok' => false, 'store' => $store, 'error' => 'Could not attach the wallet to the Blockonomics store: ' . $this->apiErrorMessage($res)];
-        }
-
-        $responseStore = $this->storeFromResponse($res);
-        $updated = $responseStore && isset($responseStore->id) ? $responseStore : $store;
-        $data = json_decode($res['body']);
-        if (isset($data->data->wallets)) {
-            $updated->wallets = $data->data->wallets;
-        } elseif ($responseStore && isset($responseStore->wallets)) {
-            $updated->wallets = $responseStore->wallets;
-        }
-
-        return ['ok' => true, 'store' => $updated, 'error' => null];
     }
 
     public function getEnabledCryptos(object $store): array
@@ -1226,82 +1617,6 @@ HTML;
         return 'HTTP ' . $res['code'];
     }
 
-    private function storeFromResponse(array $res): ?object
-    {
-        $data = json_decode($res['body']);
-        if (!$data || !isset($data->data)) {
-            return null;
-        }
-        if (is_array($data->data)) {
-            return isset($data->data[0]) && is_object($data->data[0]) ? $data->data[0] : null;
-        }
-        if (is_object($data->data)) {
-            return $data->data;
-        }
-
-        return null;
-    }
-
-    private function storeId(object $store): int|string|null
-    {
-        if (isset($store->id) && $store->id !== '') {
-            return is_numeric($store->id) ? (int) $store->id : (string) $store->id;
-        }
-
-        return null;
-    }
-
-    private function walletId(object $wallet): ?int
-    {
-        if (isset($wallet->id) && is_numeric($wallet->id)) {
-            return (int) $wallet->id;
-        }
-
-        return null;
-    }
-
-    private function isSafePartialCallback(string $storeCallback, string $callbackUrl): bool
-    {
-        if ($storeCallback === '' || $storeCallback === $callbackUrl) {
-            return false;
-        }
-
-        $storeParts = parse_url($storeCallback);
-        $targetParts = parse_url($callbackUrl);
-        if (!is_array($storeParts) || !is_array($targetParts)) {
-            return false;
-        }
-        if (($storeParts['path'] ?? '') !== '/api/guest/blockonomics/callback' || ($targetParts['path'] ?? '') !== '/api/guest/blockonomics/callback') {
-            return false;
-        }
-        if (strtolower((string) ($storeParts['host'] ?? '')) !== strtolower((string) ($targetParts['host'] ?? ''))) {
-            return false;
-        }
-        if ((string) ($storeParts['port'] ?? '') !== (string) ($targetParts['port'] ?? '')) {
-            return false;
-        }
-
-        parse_str((string) ($storeParts['query'] ?? ''), $query);
-        foreach (array_keys($query) as $key) {
-            if ($key !== 'secret') {
-                return false;
-            }
-        }
-
-        return true;
-    }
-
-    private function summarizeStore(object $store, array $enabledCryptos): array
-    {
-        return [
-            'id' => $this->storeId($store),
-            'name' => (string) ($store->name ?? ''),
-            'http_callback' => (string) ($store->http_callback ?? ''),
-            'enabled_cryptos' => array_values($enabledCryptos),
-            'wallet_count' => !empty($store->wallets) && is_array($store->wallets) ? count($store->wallets) : 0,
-        ];
-    }
-
     /**
      * Create the order table if it does not exist. FOSSBilling runs RedBeanPHP in frozen mode
      * (no auto-schema), so we create it explicitly. All columns the adapter writes must exist.
@@ -1341,6 +1656,16 @@ HTML;
             [$invoiceId, $crypto, $gatewayId]
         );
         if (!$order || empty($order->addr)) {
+            return null;
+        }
+        if (self::isTestAddress((string) $order->addr) && $order->status === null) {
+            // Store-testmode era leftovers: once testmode is off, a reused test address would
+            // trap the buyer in a simulated checkout. Regenerating costs nothing real (testmode
+            // on ⇒ new_address returns another test address; off ⇒ a real one).
+            return null;
+        }
+        if (self::isStaleUnconfirmed($order)) {
+            // A restart after a stalled payment gets a fresh row; BTC may burn one extra address.
             return null;
         }
         if ($order->status === null || (int) $order->status < $confirmations) {
@@ -1446,29 +1771,90 @@ HTML;
         return ['code' => $code, 'body' => (string) $responseBody];
     }
 
+    private function renderWaitingView(\Model_Invoice $invoice, $order): string
+    {
+        $crypto = $order ? strtoupper((string) ($order->crypto ?? 'BTC')) : 'BTC';
+        if (!in_array($crypto, self::SUPPORTED, true)) {
+            $crypto = 'BTC';
+        }
+
+        $orderId = $order ? (int) $order->id : 0;
+        $status = $order && $order->status !== null ? (int) $order->status : 0;
+        $txid = $order ? (string) ($order->txid ?? '') : '';
+        $value = $order ? (int) ($order->value_satoshi ?? 0) : 0;
+        $submittedOnly = $crypto === 'USDT' && $status === 0 && $value === 0 && $txid !== '';
+        $txAttr = htmlspecialchars($txid, ENT_QUOTES);
+        $cryptoAttr = htmlspecialchars($crypto, ENT_QUOTES);
+        $invoiceUrl = htmlspecialchars($this->di['tools']->url('invoice/' . $invoice->hash), ENT_QUOTES);
+
+        // Status copy shared with the JS TEXT constants — keep them in sync.
+        $statusHtml = $submittedOnly
+            ? 'Payment submitted ✔. Waiting for the network to verify your transaction…'
+            : 'Payment detected ✔. You can safely close this page, your invoice will be marked paid upon 2 confirmations.';
+
+        $referenceHtml = '';
+        if ($txid !== '') {
+            $shortTxid = strlen($txid) > 20 ? substr($txid, 0, 10) . '…' . substr($txid, -6) : $txid;
+            $referenceHtml = '<p class="blk-muted" style="overflow-wrap:anywhere;font-size:.85em;margin:.5em 0 0">Txn ID: <span data-blk-ref class="blk-mono">' . htmlspecialchars($shortTxid, ENT_QUOTES) . '</span></p>';
+        }
+
+        $submittedAttr = $submittedOnly ? ' data-submitted="1"' : '';
+
+        return <<<HTML
+<div data-blk-waiting data-order-id="{$orderId}" data-crypto="{$cryptoAttr}" data-txid="{$txAttr}"{$submittedAttr} style="text-align:center">
+    <p data-blk-status style="margin:.9em 0 0">{$statusHtml}</p>
+    {$referenceHtml}
+    <p data-blk-substatus class="blk-muted" style="margin-top:.75em"></p>
+    <p style="margin:.9em 0 0"><a href="{$invoiceUrl}">View invoice</a></p>
+</div>
+HTML;
+    }
+
+    /** The copy-button icon pair (copy + confirmation check, toggled by the .blk-copied class). */
+    private static function copyIconSvg(): string
+    {
+        return '<svg class="blk-ic-copy" width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><rect x="4" y="4" width="8" height="8" rx="1.5"/><path d="M2 10V3.5A1.5 1.5 0 0 1 3.5 2H10"/></svg>'
+            . '<svg class="blk-ic-check" width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M2.5 7.5 5.5 10.5 11.5 3.5"/></svg>';
+    }
+
     /** BTC payment view markup (behaviour wired by getHtml's parent script). */
     private function renderBtcView(\Model_Invoice $invoice, $order, int $confirmations, float $fiatTotal): string
     {
         $btcAmount = rtrim(rtrim(sprintf('%.8f', ((int) $order->expected_satoshi) / 1.0e8), '0'), '.');
         $addr = (string) $order->addr;
         $uri = 'bitcoin:' . $addr . '?amount=' . $btcAmount;
+        $rate = (float) $btcAmount > 0 ? $fiatTotal / (float) $btcAmount : 0.0;
 
         $addrHtml = htmlspecialchars($addr, ENT_QUOTES);
         $uriHtml = htmlspecialchars($uri, ENT_QUOTES);
         $amountHtml = htmlspecialchars($btcAmount, ENT_QUOTES);
-        $fiatHtml = htmlspecialchars(number_format($fiatTotal, 2, '.', '') . ' ' . $invoice->currency, ENT_QUOTES);
+        $fiatHtml = htmlspecialchars(number_format($fiatTotal, 2) . ' ' . $invoice->currency, ENT_QUOTES);
+        $rateHtml = htmlspecialchars('1 BTC = ' . number_format($rate, 2) . ' ' . $invoice->currency, ENT_QUOTES);
+        $assetsUrl = htmlspecialchars(SYSTEM_URL . 'modules/Blockonomics/assets', ENT_QUOTES);
         $confText = $confirmations === 0
             ? 'as soon as it is seen on the network'
             : 'after ' . $confirmations . ' confirmation' . ($confirmations === 1 ? '' : 's');
+        $orderId = (int) $order->id;
+        $copyIcon = self::copyIconSvg();
 
         return <<<HTML
-<div style="text-align:center">
-    <p>Send exactly <strong>{$amountHtml} BTC</strong> to the Bitcoin address below:</p>
-    <div id="blockonomics-qr" data-uri="{$uriHtml}" data-socket-addr="{$addrHtml}" style="display:flex;justify-content:center;margin:1em 0"></div>
-    <p style="word-break:break-all;font-family:monospace;background:#f5f5f5;padding:.6em;border-radius:6px">{$addrHtml}</p>
-    <p>Invoice total: <strong>{$fiatHtml}</strong></p>
-    <p><a class="btn btn-primary" href="{$uriHtml}">Open in Bitcoin wallet</a></p>
-    <p id="blk-pay-status" class="text-muted" style="margin-top:1em">Waiting for payment — this page updates the moment your payment is detected. The invoice is marked paid {$confText}.</p>
+<div data-order-id="{$orderId}" data-crypto="BTC" style="text-align:center">
+    <div class="blk-row">
+        <span class="blk-muted">Pay with</span>
+        <span style="display:flex;align-items:center;gap:.45em;font-weight:600"><img src="{$assetsUrl}/btc.svg" width="20" height="20" alt="">Bitcoin<a href="#" data-blk-change class="blk-muted blk-change">change</a></span>
+    </div>
+    <div class="blk-row" style="border-bottom:0">
+        <span class="blk-muted">Amount</span>
+        <span style="text-align:right">
+            <span style="display:inline-flex;align-items:center;gap:.2em"><span class="blk-mono" style="font-weight:600">{$amountHtml} BTC</span><button type="button" class="blk-copy" data-copy="{$amountHtml}" title="Copy amount">{$copyIcon}</button></span><br>
+            <span class="blk-muted" style="font-size:.8em">{$fiatHtml} · {$rateHtml}</span>
+        </span>
+    </div>
+    <div class="blk-qr"><div id="blockonomics-qr" data-uri="{$uriHtml}" data-socket-addr="{$addrHtml}"></div></div>
+    <span class="blk-label">Bitcoin address</span>
+    <div class="blk-field"><span class="blk-mono">{$addrHtml}</span><button type="button" class="blk-copy" data-copy="{$addrHtml}" title="Copy address">{$copyIcon}</button></div>
+    <a class="btn btn-primary" href="{$uriHtml}" style="width:100%;margin-top:1em">Open in wallet</a>
+    <p class="blk-note blk-muted">The invoice is marked paid {$confText}.</p>
 </div>
 HTML;
     }
@@ -1489,23 +1875,33 @@ HTML;
         $addrAttr = htmlspecialchars($receiveAddr, ENT_QUOTES);
         $amountAttr = htmlspecialchars($usdtAmount, ENT_QUOTES);
         $finishAttr = htmlspecialchars($finishUrl, ENT_QUOTES);
-        $fiatHtml = htmlspecialchars(number_format($fiatTotal, 2, '.', '') . ' ' . $invoice->currency, ENT_QUOTES);
+        $fiatHtml = htmlspecialchars(number_format($fiatTotal, 2) . ' ' . $invoice->currency, ENT_QUOTES);
+        $assetsUrl = htmlspecialchars(SYSTEM_URL . 'modules/Blockonomics/assets', ENT_QUOTES);
         $testAttr = $isTest ? 'testmode="1"' : '';
-        $testBanner = $isTest
-            ? '<p style="background:#fff3cd;color:#664d03;padding:.5em;border-radius:6px"><strong>TEST MODE</strong> — no real USDT is required; the payment is simulated.</p>'
-            : '';
+        $orderId = (int) $order->id;
+        $copyIcon = self::copyIconSvg();
 
         return <<<HTML
-<div style="text-align:center">
-    {$testBanner}
-    <p>Pay <strong>{$amountAttr} USDT</strong> (ERC-20, Ethereum network) — invoice total <strong>{$fiatHtml}</strong>:</p>
-    <web3-payment
-        order_amount="{$amountAttr}"
-        receive_address="{$addrAttr}"
-        redirect_url="{$finishAttr}"
-        {$testAttr}
-    ></web3-payment>
-    <p class="text-muted" style="margin-top:1em">Connect your wallet and pay — this invoice is marked paid automatically once the transaction confirms.</p>
+<div data-order-id="{$orderId}" data-crypto="USDT" style="text-align:center">
+    <div class="blk-row">
+        <span class="blk-muted">Pay with</span>
+        <span style="display:flex;align-items:center;gap:.45em;font-weight:600"><img src="{$assetsUrl}/usdt.svg" width="20" height="20" alt="">Tether<a href="#" data-blk-change class="blk-muted blk-change">change</a></span>
+    </div>
+    <div class="blk-row" style="border-bottom:0">
+        <span class="blk-muted">Amount</span>
+        <span style="text-align:right">
+            <span style="display:inline-flex;align-items:center;gap:.2em"><span class="blk-mono" style="font-weight:600">{$amountAttr} USDT</span><button type="button" class="blk-copy" data-copy="{$amountAttr}" title="Copy amount">{$copyIcon}</button></span><br>
+            <span class="blk-muted" style="font-size:.8em">{$fiatHtml} · ERC-20, Ethereum network</span>
+        </span>
+    </div>
+    <div style="margin-top:1em">
+        <web3-payment
+            order_amount="{$amountAttr}"
+            receive_address="{$addrAttr}"
+            redirect_url="{$finishAttr}"
+            {$testAttr}
+        ></web3-payment>
+    </div>
 </div>
 HTML;
     }

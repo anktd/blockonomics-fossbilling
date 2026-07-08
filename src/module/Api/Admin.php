@@ -22,8 +22,28 @@ class Admin extends \FOSSBilling\Api\AbstractApi
     public function callback_url($data = []): array
     {
         $this->loadAdapterClass();
+        $this->defaultPaymentModeOn();
 
         return ['callback_url' => \Payment_Adapter_Blockonomics::getCallbackUrlFromDi($this->di)];
+    }
+
+    /**
+     * Core installs new gateways with allow_single = 0, so a freshly added Blockonomics tile
+     * is invisible to buyers until the admin finds the toggle. Default it ON — but only while
+     * the gateway has never been saved (config still NULL), so a deliberate later opt-out
+     * sticks. Runs on every settings-page load via callback_url.
+     */
+    private function defaultPaymentModeOn(): void
+    {
+        try {
+            $gateway = $this->di['db']->findOne('PayGateway', 'gateway = ?', ['Blockonomics']);
+            if ($gateway && empty($gateway->config) && !(int) $gateway->allow_single && !(int) $gateway->allow_recurrent) {
+                $gateway->allow_single = 1;
+                $this->di['db']->store($gateway);
+            }
+        } catch (\Throwable) {
+            // Cosmetic default; never block the settings page.
+        }
     }
 
     public function test_setup($data = []): array
@@ -35,34 +55,22 @@ class Admin extends \FOSSBilling\Api\AbstractApi
         $gateway = $this->getGateway((int) ($data['gateway_id'] ?? 0));
         $savedConfig = $this->getGatewayConfig($gateway);
         $savedKey = trim((string) ($savedConfig['api_key'] ?? ''));
-        $typedKey = trim((string) ($data['api_key'] ?? ''));
-        $apiKey = $typedKey !== '' ? $typedKey : $savedKey;
 
-        if ($apiKey === '') {
+        // Test Setup only ever tests the SAVED configuration (the admin JS refuses to run
+        // with unsaved edits). Must stay before adapter construction: the ctor throws on an
+        // empty key, and this case deserves a plain message, not an exception.
+        if ($savedKey === '') {
             return [
-                'message' => 'Blockonomics setup needs attention.',
-                'success' => [],
-                'error' => ['Enter your Blockonomics API key before running Test Setup.'],
-                'store' => null,
+                'error' => ['API Key is not set. Please enter your API Key and hit Update Gateway to save changes'],
                 'cryptos' => [],
                 'callback_url' => $callbackUrl,
-                'actions_taken' => [],
             ];
         }
 
-        $config = $savedConfig;
-        $config['api_key'] = $apiKey;
-
-        $adapter = new \Payment_Adapter_Blockonomics($config);
+        $adapter = new \Payment_Adapter_Blockonomics($savedConfig);
         $adapter->setDi($this->di);
-        $result = $adapter->testSetup();
-        $result = $this->normalizeResult($result, $callbackUrl);
 
-        if ($typedKey !== '' && !hash_equals($savedKey, $typedKey)) {
-            $result['note'] = 'This tested the API key typed in the form, which is not saved yet — click Update Gateway to keep it.';
-        }
-
-        return $result;
+        return $this->normalizeResult($adapter->testSetup(), $callbackUrl);
     }
 
     private function loadAdapterClass(): void
@@ -109,17 +117,13 @@ class Admin extends \FOSSBilling\Api\AbstractApi
     private function normalizeResult(array $result, string $callbackUrl): array
     {
         return [
-            'message' => (string) ($result['message'] ?? 'Blockonomics setup finished.'),
-            'success' => array_values(array_map('strval', $result['success'] ?? [])),
             'error' => array_values(array_map('strval', $result['error'] ?? [])),
-            'store' => $result['store'] ?? null,
             'cryptos' => array_map(static fn ($c) => [
                 'code' => (string) ($c['code'] ?? ''),
                 'ok' => (bool) ($c['ok'] ?? false),
                 'message' => (string) ($c['message'] ?? ''),
             ], array_values(is_array($result['cryptos'] ?? null) ? $result['cryptos'] : [])),
             'callback_url' => (string) ($result['callback_url'] ?? $callbackUrl),
-            'actions_taken' => array_values(array_map('strval', $result['actions_taken'] ?? [])),
         ];
     }
 }

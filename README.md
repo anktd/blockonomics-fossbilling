@@ -6,7 +6,7 @@ Accept **crypto payments** in [FOSSBilling](https://fossbilling.org) using [Bloc
 
 - **BTC**: a fresh address per invoice, shown on-page with a QR code. Payments are detected live over a websocket and the invoice is marked paid automatically after 2 confirmations.
 - **USDT (ERC-20)**: wallet-connect checkout powered by Blockonomics' payment widget — the buyer connects their wallet and pays; no transaction hashes to copy around.
-- One gateway, the buyer picks the coin at checkout.
+- One gateway — the invoice-page tile shows the coins your store accepts (kept up to date by Test Setup), and the buyer picks the coin on an on-page payment card with QR, copyable address and amount, the live exchange rate, and confirmation progress.
 - Safe by default: callbacks are authenticated with a secret, amounts are validated server-side, and duplicate callbacks can never double-credit an invoice.
 - Full test mode: enable *Test Mode* on your Blockonomics store and the entire flow — including USDT wallet payments — runs with simulated coins.
 
@@ -51,6 +51,20 @@ Enable **Test Mode** on your Blockonomics store. BTC checkouts then issue test a
 - At checkout the buyer picks BTC or USDT. The adapter fetches a receive address and the live exchange rate from the Blockonomics API and shows the payment screen on your invoice page — the buyer is never redirected off-site.
 - Blockonomics sends a callback to your FOSSBilling instance for every status change of the payment. The extension validates the secret and the paid amount, tracks confirmations, and marks the invoice paid through FOSSBilling's standard transaction pipeline.
 - A payment that matches (or exceeds) the requested amount marks the invoice paid; any shortfall is credited as a partial payment and the invoice stays unpaid until the balance is covered.
+
+## Recovering a stuck USDT payment
+
+USDT payments are matched to invoices by transaction hash, which is normally captured automatically when the buyer completes the payment widget. If a buyer paid but their invoice never updates — they closed the browser before the widget finished, or sent the USDT directly from an external wallet — the payment can be attached manually:
+
+1. Ask the buyer for the **transaction hash** (`0x…`, 64 hex characters) of their USDT transfer.
+2. Open the buyer's unpaid invoice and copy its **hash** from the invoice URL (`/invoice/<hash>`).
+3. Visit (any browser, no login needed):
+
+   ```
+   https://your-fossbilling-domain/api/guest/blockonomics/finish?invoice_hash=<invoice hash>&txhash=<transaction hash>
+   ```
+
+This registers the transaction with Blockonomics for monitoring; the invoice is settled automatically once the confirmation callback arrives (already-confirmed transactions are picked up on the next monitoring pass). The endpoint is safe to re-open with the same values, and a hash that is already attached to another invoice is not re-attached. Note: this recovery requires that the USDT payment screen was opened at least once for the invoice (that step creates the payment record the hash attaches to) — if it never was, open the invoice's payment page and select USDT first.
 
 ## Licensing
 
