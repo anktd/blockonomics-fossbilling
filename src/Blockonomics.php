@@ -100,7 +100,6 @@ class Payment_Adapter_Blockonomics implements FOSSBilling\InjectionAwareInterfac
     .blockonomics-setup-results { margin-top: 10px; display: none; padding: .6em .8em; border-radius: 6px; background: rgba(98,105,118,.06); border-left: 3px solid #8a94a6; }
     .blockonomics-setup-results p { margin: 0; }
     .blockonomics-setup-results > div { margin: 3px 0; }
-    .blockonomics-setup-results ul { margin: 4px 0 0 18px; padding: 0; }
     .blockonomics-setup-note { margin: 8px 0 0; }
     .blockonomics-setup-note-error { color: #d63939; }
     </style>
@@ -484,7 +483,7 @@ HTML;
             </div>
             <div id="blk-view">{$waitingHtml}</div>
             <p id="blk-loading" class="blk-muted" style="display:none;margin:.8em 0 0">Generating payment details…</p>
-            <p id="blk-error" style="color:#d63939;margin:.5em 0 0"></p>
+            <p id="blk-error" style="margin:.5em 0 0"></p>
         </div>
     </div>
     <template id="blk-waiting-tpl">{$waitingTemplate}</template>
@@ -883,14 +882,12 @@ HTML;
                     loading.style.display = 'none';
                     if (j && typeof j.result === 'string') { view.innerHTML = j.result; activateView(); }
                     else {
-                        chooser.style.display = '';
-                        setBar('neutral', 'Select payment currency', false);
+                        setBar('neutral', 'Unable to start payment', false);
                         showError((j && j.error && j.error.message) || 'Could not start checkout. Please try again.');
                     }
                 }).catch(function () {
                     loading.style.display = 'none';
-                    chooser.style.display = '';
-                    setBar('neutral', 'Select payment currency', false);
+                    setBar('neutral', 'Unable to start payment', false);
                     showError('Network error. Please try again.');
                 });
             });
