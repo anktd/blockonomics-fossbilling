@@ -1201,12 +1201,21 @@ HTML;
         $client = $this->di['db']->getExistingModelById('Client', $invoice->client_id);
         $clientService = $this->di['mod_service']('Client');
         $description = sprintf('Blockonomics %s payment to %s (tx %s)', $crypto, $noteAddress, $noteTxid);
-        $clientService->addFunds($client, $paymentAmount, $description, [
-            'amount' => $paymentAmount,
-            'description' => $description,
-            'type' => 'transaction',
-            'rel_id' => $tx->id,
-        ]);
+        $existingCredit = $this->di['db']->findOne(
+            'ClientBalance',
+            'type = ? AND rel_id = ?',
+            ['transaction', $tx->id]
+        );
+        if ($existingCredit) {
+            $logger->info('Blockonomics callback: client credit for transaction ' . $tx->id . ' already exists, skipping duplicate credit.');
+        } else {
+            $clientService->addFunds($client, $paymentAmount, $description, [
+                'amount' => $paymentAmount,
+                'description' => $description,
+                'type' => 'transaction',
+                'rel_id' => $tx->id,
+            ]);
+        }
 
         // Settle only invoices that are still payable. A refunded/canceled invoice (e.g. a
         // stuck tx confirming after the merchant refunded) must not be flipped back to paid

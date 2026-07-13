@@ -4,7 +4,7 @@ Accept crypto payments in FOSSBilling using Blockonomics. When a customer pays, 
 
 ## Requirements
 
-- FOSSBilling **0.8.3** or later (PHP 8.3+)
+- FOSSBilling **0.8.3** or later (PHP 8.2+)
 - Blockonomics API Key
 
 ## Configure Blockonomics
@@ -28,6 +28,9 @@ Accept crypto payments in FOSSBilling using Blockonomics. When a customer pays, 
 8. Return to [Blockonomics → Stores](https://www.blockonomics.co/dashboard#/store), paste the callback URL into your Store (added in step 3), and click Update Store.
 9. Copy the API key from the [Blockonomics Stores page](https://www.blockonomics.co/dashboard#/store). Paste it into Blockonomics API Key in FOSSBilling, enable the gateway,  and click Update Gateway.
 10. Hit **Test Setup**. Setup is complete when the enabled currencies display check marks. For ex. BTC ✅ USDT ✅
+
+### Uninstall
+Removing the payment gateway does not remove the companion Blockonomics module. For full removal, uninstall the module separately under Extensions.
 
 ### Optional Integration Testing
 Enable Testmode on the Blockonomics Store to simulate checkout and callback processing without making a real payment. The relevant test-mode control is the one on the Blockonomics Store. [Here](https://help.blockonomics.co/support/solutions/articles/33000287720-how-to-use-testmode-in-blockonomics) is a comprehensive guide about this.

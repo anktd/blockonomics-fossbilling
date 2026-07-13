@@ -5,5 +5,5 @@
   "description": "Companion module for the Blockonomics payment gateway. Provides the public endpoints that receive Blockonomics payment callbacks and serve the checkout.",
   "author": "Blockonomics",
   "author_url": "https://www.blockonomics.co/",
-  "version": "0.1.3"
+  "version": "0.2.0"
 }
