@@ -10,15 +10,16 @@ Accept crypto payments in FOSSBilling using Blockonomics. When a customer pays, 
 ## Installing the plugin
 
 1. Download `Blockonomics.zip` from the [latest release](https://github.com/anktd/blockonomics-fossbilling/releases/latest)
-2. Create a folder named `Blockonomics` in `/library/Payment/Adapter` of your FOSSBilling installation
-3. Extract the archive into that folder
-4. Go to **System → Payment gateways**, find Blockonomics in the **New payment gateway** tab and click the cog icon to install it
+2. Extract the archive inside `/library/Payment/Adapter/` of your FOSSBilling installation. The archive creates the `Blockonomics/` folder for you
+3. Go to **System → Payment gateways**, find Blockonomics in the **New payment gateway** tab and click the cog icon to install it
 
 ## Configuration
 
 1. Get started using the [Blockonomics Quickstart guide](https://help.blockonomics.co/support/solutions/articles/33000315478-quickstart) 
 2. Paste your **API Key** into the plugin settings in FOSSBilling and save
 3. Hit **Test Setup**
+
+Confirmed payments must cover the complete quoted crypto amount. Underpayments are recorded for the merchant, but the invoice stays unpaid and no customer account credit is added. Overpayments settle only the invoice total; the excess is recorded for the merchant and is not added to customer account credit.
 
 
 ## Support

@@ -15,6 +15,20 @@ namespace FOSSBilling {
         {
         }
     }
+
+    if (!class_exists(Config::class)) {
+        class Config
+        {
+            public static array $properties = [
+                'info.salt' => '0123456789abcdef0123456789abcdef',
+            ];
+
+            public static function getProperty(string $property, mixed $default = null): mixed
+            {
+                return self::$properties[$property] ?? $default;
+            }
+        }
+    }
 }
 
 namespace {

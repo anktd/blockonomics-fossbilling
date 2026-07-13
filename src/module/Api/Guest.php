@@ -57,9 +57,9 @@ class Guest extends \FOSSBilling\Api\AbstractApi
             return ['result' => 'ignored', 'reason' => 'adapter not installed'];
         }
 
-        // Verify the secret (defence in depth). Derived from the instance salt by the adapter --
-        // the same value it embeds in the registered callback URL (single source of truth).
-        $expectedSecret = \Payment_Adapter_Blockonomics::deriveCallbackSecret((string) ($this->di['config']['salt'] ?? ''));
+        // Verify the secret (defence in depth). The adapter derives the same stable token from
+        // FOSSBilling's per-install secret for every callback URL call site.
+        $expectedSecret = \Payment_Adapter_Blockonomics::getCallbackSecretFromConfig();
         $providedSecret = (string) ($data['secret'] ?? '');
         if (!hash_equals($expectedSecret, $providedSecret)) {
             $this->di['logger']->info('Blockonomics callback rejected: secret mismatch (addr ' . $addr . ').');
@@ -67,10 +67,14 @@ class Guest extends \FOSSBilling\Api\AbstractApi
             return ['result' => 'ignored', 'reason' => 'secret mismatch'];
         }
 
-        // Resolve the order the adapter created in getHtml(), keyed by address (fallback txid).
-        $order = $this->di['db']->findOne('blockonomics_order', 'addr = ?', [$addr]);
-        if (!$order && $txid !== '') {
-            $order = $this->di['db']->findOne('blockonomics_order', 'txid = ?', [$txid]);
+        // BTC addresses are per-invoice. USDT uses a shared address and its documented
+        // callback fields do not include the coin, so recognize the pre-bound USDT tx hash.
+        $txOrder = $txid !== '' ? $this->di['db']->findOne('blockonomics_order', 'txid = ?', [$txid]) : null;
+        if ($txOrder && strtoupper((string) ($txOrder->crypto ?? '')) === 'USDT') {
+            $order = $txOrder;
+        } else {
+            $order = $this->di['db']->findOne('blockonomics_order', 'addr = ?', [$addr]);
+            $order = $order ?: $txOrder;
         }
         if (!$order) {
             $this->di['logger']->info('Blockonomics callback: no matching order for addr ' . $addr . ', txid ' . $txid . '.');
@@ -80,7 +84,7 @@ class Guest extends \FOSSBilling\Api\AbstractApi
 
         // Hand off to the core transaction pipeline with the resolved invoice_id. This creates
         // the Transaction and calls Payment_Adapter_Blockonomics::processTransaction(), which
-        // does the confirmation gate, underpayment + dedup handling, and marks the invoice paid.
+        // performs the confirmation, amount, and dedup gates, settling only sufficient payments.
         //
         // We set txn_id to the same unique key the adapter uses (txid-addr) so the core's
         // built-in dedup in ServiceTransaction::create() returns the already-processed
@@ -157,7 +161,7 @@ class Guest extends \FOSSBilling\Api\AbstractApi
             && (string) ($order->txid ?? '') !== '';
 
         return [
-            'pending' => $status !== null && $status < 2,
+            'pending' => $status !== null && $status >= 0 && $status < 2,
             'crypto' => $crypto,
             'status' => $status,
             'required' => 2,
@@ -166,6 +170,7 @@ class Guest extends \FOSSBilling\Api\AbstractApi
             'paid' => $paid,
             'payable' => $payable,
             'underpaid' => (bool) (\Payment_Adapter_Blockonomics::isUnderpaidOrder($order) && !$paid),
+            'reverted' => (bool) (\Payment_Adapter_Blockonomics::isRevertedOrder($order) && !$paid),
             'order_id' => (int) $order->id,
         ];
     }
@@ -352,6 +357,7 @@ class Guest extends \FOSSBilling\Api\AbstractApi
             'paid' => false,
             'payable' => true,
             'underpaid' => false,
+            'reverted' => false,
             'order_id' => null,
         ];
     }

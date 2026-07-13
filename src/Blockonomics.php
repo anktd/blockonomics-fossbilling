@@ -28,6 +28,9 @@ class Payment_Adapter_Blockonomics implements FOSSBilling\InjectionAwareInterfac
     private const WALLETS_URL = self::BASE_URL . '/api/v2/wallets';
     private const STORES_URL = self::BASE_URL . '/api/v2/stores?wallets=true';
 
+    /** Domain-separates the callback token from every other use of the install secret. */
+    private const CALLBACK_SECRET_CONTEXT = 'blockonomics:callback:v1';
+
     /** Coins this gateway offers the buyer. */
     private const SUPPORTED = ['BTC', 'USDT'];
 
@@ -425,7 +428,12 @@ HTML;
         $underpaidBanner = ($existingOrder
             && self::isUnderpaidOrder($existingOrder)
             && $invoice->status === Model_Invoice::STATUS_UNPAID)
-                ? '<div class="blk-banner">Your earlier payment was less than the invoice total and has been credited to your account. Choose a method below to pay the full amount — your earlier payment stays available as account credit.</div>'
+                ? '<div class="blk-banner">Your previous crypto payment was below the required amount and did not settle this invoice. Contact the merchant regarding the earlier payment.</div>'
+                : '';
+        $revertedBanner = ($existingOrder
+            && self::isRevertedOrder($existingOrder)
+            && $invoice->status === Model_Invoice::STATUS_UNPAID)
+                ? '<div class="blk-banner">Your previous transaction was reverted or dropped and did not settle this invoice. Select a payment method below to try again.</div>'
                 : '';
         $chooserHidden = $waitingHtml !== '' ? 'style="display:none"' : '';
         $waitingTemplate = $this->renderWaitingView($invoice, null);
@@ -471,6 +479,7 @@ HTML;
         <div class="blk-bar" id="blk-bar" data-mode="neutral"><span class="blk-spin" id="blk-bar-spin" style="display:none"></span><span id="blk-bar-text">Select payment currency</span></div>
         <div class="blk-body">
             {$underpaidBanner}
+            {$revertedBanner}
             <div id="blk-chooser" {$chooserHidden}>
                 <button type="button" class="blk-coin" data-crypto="BTC">
                     <img src="{$assetsUrl}/btc.svg" width="38" height="38" alt="">
@@ -570,7 +579,8 @@ HTML;
             USDT_SUBMITTED: 'Payment submitted ✔. Waiting for the network to verify your transaction…',
             USDT_STALLED: "We haven't been able to verify your transaction yet. If your wallet shows the transfer as failed or cancelled, you can start the payment again.",
             CONFIRMED_PAID: 'Payment confirmed ✔. Your invoice has been paid, taking you to your invoice…',
-            UNDERPAID: 'Your payment confirmed, but it was less than the invoice total (this can happen with exchange-rate movement or wallet fees). The amount received has been credited to your account. Open the invoice to complete the payment.',
+            UNDERPAID: 'Your payment confirmed, but it was below the required amount and did not settle this invoice. Contact the merchant regarding the earlier payment.',
+            REVERTED: 'Your transaction was reverted or dropped and did not settle this invoice. Open the invoice to try again.',
             FINALIZING_STALLED: "Your payment is confirmed on the network, but the invoice hasn't updated yet. It's safe to close this page. If it isn't marked paid within a few minutes, please contact support with Txn ID ",
             NOT_PAYABLE: 'This invoice can no longer be paid.',
             CONNECTION: 'Connection issue — retrying…',
@@ -715,8 +725,13 @@ HTML;
             if (data && data.underpaid) {
                 setBar('warn', 'Payment received — amount was short', false);
                 setStatusText(TEXT.UNDERPAID, true);
-                state.intervalOverride = 60000;
-                scheduleWaiting(state, state.intervalOverride);
+                stopState(state);
+                return;
+            }
+            if (data && data.reverted) {
+                setBar('error', 'Transaction reverted', false);
+                setStatusText(TEXT.REVERTED, true);
+                stopState(state);
                 return;
             }
             if (data && data.submitted_only && data.stale) {
@@ -1001,12 +1016,18 @@ HTML;
 
         $get = $data['get'] ?? [];
         $secret = (string) ($get['secret'] ?? '');
-        $status = isset($get['status']) ? (int) $get['status'] : -1;
+        $status = isset($get['status']) ? (int) $get['status'] : -999;
         $addr = (string) ($get['addr'] ?? '');
-        $value = isset($get['value']) ? (int) $get['value'] : 0;
+        $value = isset($get['value']) ? max(0, (int) $get['value']) : 0;
         $txid = (string) ($get['txid'] ?? '');
 
         $logger = $this->di['logger'];
+
+        if ($status < -1) {
+            $logger->info('Blockonomics callback rejected: missing or invalid status.');
+
+            return;
+        }
 
         // 1. Authenticate the callback.
         if (!hash_equals($this->getCallbackSecret(), $secret)) {
@@ -1015,20 +1036,15 @@ HTML;
             return;
         }
 
-        // 2. Match our order. USDT callbacks (the server sends crypto=USDT) resolve by
-        //    txid only: the shared static USDT address is never an attribution key. BTC
-        //    stays addr-first (per-invoice address), txid as fallback.
-        $isUsdt = strtoupper((string) ($get['crypto'] ?? '')) === 'USDT';
-        if ($isUsdt) {
-            $order = null;
-            if ($txid !== '') {
-                $order = $this->di['db']->findOne('blockonomics_order', 'txid = ?', [$txid]);
-            }
+        // 2. Match our order. USDT's documented callback fields do not include the coin,
+        //    so identify its pre-bound tx hash from our order row. BTC stays addr-first:
+        //    one blockchain transaction can legitimately pay more than one BTC address.
+        $txOrder = $txid !== '' ? $this->di['db']->findOne('blockonomics_order', 'txid = ?', [$txid]) : null;
+        if ($txOrder && strtoupper((string) ($txOrder->crypto ?? '')) === 'USDT') {
+            $order = $txOrder;
         } else {
             $order = $this->di['db']->findOne('blockonomics_order', 'addr = ?', [$addr]);
-            if (!$order && $txid !== '') {
-                $order = $this->di['db']->findOne('blockonomics_order', 'txid = ?', [$txid]);
-            }
+            $order = $order ?: $txOrder;
         }
         if (!$order) {
             $logger->info('Blockonomics callback: no matching order for addr ' . $addr . ', txid ' . $txid . '.');
@@ -1049,7 +1065,10 @@ HTML;
         $expectedSatoshi = (int) $order->expected_satoshi;
 
         // Record what this callback reported on the order row.
-        if ((string) $order->txid !== $txid || $status >= (int) $order->status) {
+        $currentOrderStatus = $order->status === null ? null : (int) $order->status;
+        if ($status === -1
+            || (string) $order->txid !== $txid
+            || ($currentOrderStatus !== -1 && $status >= (int) $currentOrderStatus)) {
             // Older-txid stale unconfirmed IPNs may cosmetically rewind this row; the next real callback self-heals and accounting uses transaction rows.
             $order->txid = $txid;
             $order->status = $status;
@@ -1061,10 +1080,11 @@ HTML;
         $tx->invoice_id = $invoice->id;
         $tx->currency = $invoice->currency;
         $tx->txn_status = (string) $status;
+        $uniqueTxid = self::uniqueTxnId($txid, $addr);
+        $tx->txn_id = $uniqueTxid;
 
         // 3. Confirmation gate — not enough confirmations yet ⇒ pending, not paid.
-        if ($status < $confirmations) {
-            $tx->txn_id = self::uniqueTxnId($txid, $addr);
+        if ($status >= 0 && $status < $confirmations) {
             $tx->status = Model_Transaction::STATUS_RECEIVED;
             $tx->updated_at = date('Y-m-d H:i:s');
             $this->di['db']->store($tx);
@@ -1072,32 +1092,25 @@ HTML;
             return;
         }
 
-        // 4. Payment-amount handling. BTC: full/overpayment credits the received amount
-        //    (surplus becomes client credit — the per-invoice address proves the money was
-        //    for this invoice); shortfall credits proportionally.
+        // 4. Calculate the reported value. Amount sufficiency is decided in smallest units,
+        //    before any client balance mutation. The full quote is required; a real shortfall
+        //    never adds funds.
+        $crypto = strtoupper((string) ($order->crypto ?? ''));
         $satoshiPaid = $value;
         $percentPaid = $expectedSatoshi > 0 ? ($satoshiPaid / $expectedSatoshi * 100) : 0;
         $fiatTotal = $invoiceService->getTotalWithTax($invoice);
-        $paymentAmount = round($percentPaid / 100 * $fiatTotal, 2);
-        // USDT: txhash is client-claimable (shared static address) — never credit more than
-        // the invoice. BTC keeps surplus-as-credit: its address is per-invoice and chain-bound.
-        if (strtoupper((string) $order->crypto) === 'USDT' && $expectedSatoshi > 0) {
-            if ($satoshiPaid >= $expectedSatoshi) {
-                $paymentAmount = round($fiatTotal, 2); // exact invoice amount, never more
-            }
-            if ($satoshiPaid > $expectedSatoshi) {
-                $logger->info(sprintf('Blockonomics: USDT overpayment on invoice %d — %d units above expected; credited invoice amount only (tx %s).', $invoice->id, $satoshiPaid - $expectedSatoshi, $txid));
-            } elseif ($satoshiPaid < $expectedSatoshi) {
-                $logger->info(sprintf('Blockonomics: USDT underpayment on invoice %d — received %d of %d expected units; verify the tx belongs to this invoice (tx %s).', $invoice->id, $satoshiPaid, $expectedSatoshi, $txid));
-            }
+        $paymentAmount = min(round($percentPaid / 100 * $fiatTotal, 2), round($fiatTotal, 2));
+        $paymentSufficient = self::isPaymentSufficient($satoshiPaid, $expectedSatoshi);
+        // Never turn an on-chain overpayment into customer wallet credit. Both coins settle
+        // for the invoice total only; the actual crypto amount remains in the audit trail.
+        $overpaid = $expectedSatoshi > 0 && $satoshiPaid > $expectedSatoshi;
+        if ($overpaid) {
+            $logger->info(sprintf('Blockonomics: %s overpayment on invoice %d — %d units above expected; credited invoice amount only (tx %s).', $crypto, $invoice->id, $satoshiPaid - $expectedSatoshi, $txid));
+        } elseif ($crypto === 'USDT' && !$paymentSufficient) {
+            $logger->info(sprintf('Blockonomics: USDT underpayment on invoice %d — received %d of %d expected units; verify the tx belongs to this invoice (tx %s).', $invoice->id, $satoshiPaid, $expectedSatoshi, $txid));
         }
 
-        // 5. Build a unique transaction id (shared with the guest endpoint so the core's
-        //    txn_id-based dedup in create() matches ours exactly).
-        $uniqueTxid = self::uniqueTxnId($txid, $addr);
-        $tx->txn_id = $uniqueTxid;
-
-        // 6. Dedup: if a transaction with this unique id is already (being) processed, stop.
+        // 5. Dedup: if a transaction with this unique id is already (being) processed, stop.
         // Identical callbacks racing onto different rows could both pass this before either claims;
         // serializing that would require SELECT ... FOR UPDATE on the order row, but Blockonomics does not send identical callbacks milliseconds apart.
         $duplicate = $this->di['db']->findOne(
@@ -1114,7 +1127,16 @@ HTML;
             return;
         }
 
-        // 7. Claim atomically (RECEIVED → PROCESSING) to guard against concurrent double-credit.
+        // A retry of an already-recorded terminal failure needs no further work. FOSSBilling's
+        // IPN-hash dedup returns the same error row for an identical callback.
+        $existingError = (string) ($tx->error ?? '');
+        if ($tx->status === Model_Transaction::STATUS_ERROR
+            && (($status === -1 && str_starts_with($existingError, 'Blockonomics transaction reverted:'))
+                || (!$paymentSufficient && str_starts_with($existingError, 'Blockonomics underpayment:')))) {
+            return;
+        }
+
+        // 6. Claim atomically (RECEIVED → PROCESSING) to guard against concurrent double-credit.
         $transactionService = $this->di['mod_service']('Invoice', 'Transaction');
         if (!$transactionService->claimForProcessing((int) $tx->id)) {
             $logger->info('Blockonomics callback: transaction ' . $tx->id . ' claim refused, ignoring.');
@@ -1122,10 +1144,63 @@ HTML;
             return;
         }
 
-        // 8. Credit the client and settle the invoice from credits.
+        $noteAddress = self::cleanPaymentIdentifier($crypto === 'USDT'
+            ? explode('-', (string) $order->addr)[0]
+            : (string) $order->addr);
+        $noteTxid = self::cleanPaymentIdentifier($txid);
+        $receivedCrypto = self::formatCryptoUnits($satoshiPaid, $crypto);
+        $expectedCrypto = self::formatCryptoUnits($expectedSatoshi, $crypto);
+
+        if ($status === -1) {
+            $error = sprintf('Blockonomics transaction reverted: %s transaction %s was reverted or dropped.', $crypto ?: 'crypto', $noteTxid);
+            $tx->amount = 0;
+            $tx->status = Model_Transaction::STATUS_ERROR;
+            $tx->error = $error;
+            $tx->updated_at = date('Y-m-d H:i:s');
+            $this->di['db']->store($tx);
+            $invoiceService->addNote($invoice, sprintf(
+                'Blockonomics %s transaction reverted or dropped: %s to %s (tx %s). Invoice remains unpaid.',
+                $crypto,
+                $receivedCrypto,
+                $noteAddress,
+                $noteTxid
+            ));
+            $logger->info('Blockonomics: ' . $error);
+
+            return;
+        }
+
+        if (!$paymentSufficient) {
+            $error = sprintf(
+                'Blockonomics underpayment: expected %s %s, received %s %s.',
+                $expectedCrypto,
+                $crypto,
+                $receivedCrypto,
+                $crypto
+            );
+            $tx->amount = $paymentAmount;
+            $tx->status = Model_Transaction::STATUS_ERROR;
+            $tx->error = $error;
+            $tx->updated_at = date('Y-m-d H:i:s');
+            $this->di['db']->store($tx);
+            $invoiceService->addNote($invoice, sprintf(
+                'Blockonomics underpayment: received %s %s of %s %s expected to %s (tx %s). Invoice remains unpaid; no client credit was added.',
+                $receivedCrypto,
+                $crypto,
+                $expectedCrypto,
+                $crypto,
+                $noteAddress,
+                $noteTxid
+            ));
+            $logger->info(sprintf('Blockonomics: invoice %d underpaid; no client credit added (%s).', $invoice->id, $uniqueTxid));
+
+            return;
+        }
+
+        // 7. Credit the client and settle the invoice from credits.
         $client = $this->di['db']->getExistingModelById('Client', $invoice->client_id);
         $clientService = $this->di['mod_service']('Client');
-        $description = 'Blockonomics ' . ((string) ($order->crypto ?? '')) . ' payment ' . $uniqueTxid;
+        $description = sprintf('Blockonomics %s payment to %s (tx %s)', $crypto, $noteAddress, $noteTxid);
         $clientService->addFunds($client, $paymentAmount, $description, [
             'amount' => $paymentAmount,
             'description' => $description,
@@ -1143,18 +1218,39 @@ HTML;
                 $invoiceService->approveInvoice($invoice, ['use_credits' => false]);
             }
             $invoiceService->payInvoiceWithCredits($invoice);
-        } elseif ($paymentAmount >= $fiatTotal - 0.01) {
+        } else {
             // Deposit ("Add funds") invoice: the addFunds above IS the deposit — the invoice's
             // deposit item ships pre-charged and its executeTask is a no-op, so marking the
             // invoice paid moves no further money (same pattern as the core Stripe adapter).
             // Batch-paying other invoices here would silently divert the top-up (verified live:
             // the deposit stayed unpaid while an unrelated invoice got settled).
-            // An underpaid top-up stays open; the received amount is already account credit.
             $invoiceService->markAsPaid($invoice);
+        }
+
+        if ($overpaid) {
+            $invoiceService->addNote($invoice, sprintf(
+                'Blockonomics overpayment: received %s %s; expected %s %s to %s (tx %s). Invoice credited for the invoice total only.',
+                $receivedCrypto,
+                $crypto,
+                $expectedCrypto,
+                $crypto,
+                $noteAddress,
+                $noteTxid
+            ));
+        } else {
+            $invoiceService->addNote($invoice, sprintf(
+                'Blockonomics payment received: %s %s to %s (tx %s).',
+                $receivedCrypto,
+                $crypto,
+                $noteAddress,
+                $noteTxid
+            ));
         }
 
         $tx->amount = $paymentAmount;
         $tx->status = Model_Transaction::STATUS_PROCESSED;
+        $tx->error = null;
+        $tx->error_code = null;
         $tx->updated_at = date('Y-m-d H:i:s');
         $this->di['db']->store($tx);
 
@@ -1191,19 +1287,37 @@ HTML;
 
     private function getCallbackSecret(): string
     {
-        return self::deriveCallbackSecret((string) ($this->di['config']['salt'] ?? ''));
+        return self::getCallbackSecretFromConfig();
     }
 
     public static function deriveCallbackSecret(string $salt): string
     {
+        if (strlen(trim($salt)) < 32) {
+            throw new Payment_Exception('FOSSBilling installation salt is missing or invalid.');
+        }
+
         // Truncated to 40 hex chars (160 bits) to keep the callback URL short — same secret
         // length our WooCommerce plugin uses (sha1). Truncated HMAC output is standard practice.
-        return substr(hash_hmac('sha256', 'blockonomics:callback', $salt), 0, 40);
+        return substr(hash_hmac('sha256', self::CALLBACK_SECRET_CONTEXT, $salt), 0, 40);
     }
 
+    /** Derive one stable per-install callback token without persisting another secret. */
+    public static function getCallbackSecretFromConfig(): string
+    {
+        $salt = \FOSSBilling\Config::getProperty('info.salt');
+
+        return self::deriveCallbackSecret(is_string($salt) ? $salt : '');
+    }
+
+    public static function getCallbackUrlFromConfig(): string
+    {
+        return self::buildCallbackUrl(self::getCallbackSecretFromConfig());
+    }
+
+    /** @deprecated Kept so an older mirrored admin module still loads during the upgrade. */
     public static function getCallbackUrlFromDi(Pimple\Container $di): string
     {
-        return self::buildCallbackUrl(self::deriveCallbackSecret((string) ($di['config']['salt'] ?? '')));
+        return self::getCallbackUrlFromConfig();
     }
 
     public static function buildCallbackUrl(string $secret): string
@@ -1270,6 +1384,7 @@ HTML;
         $status = $order->status ?? null;
 
         return $status !== null
+            && (int) $status >= 0
             && (int) $status < self::CONFIRMATIONS
             && !self::isStaleUnconfirmed($order);
     }
@@ -1283,6 +1398,33 @@ HTML;
         return $status >= self::CONFIRMATIONS
             && $value > 0
             && $value < $expected;
+    }
+
+    public static function isRevertedOrder($order): bool
+    {
+        return $order->status !== null && (int) $order->status === -1;
+    }
+
+    /** Decide in smallest units so fiat rounding can never accept a real shortfall. */
+    public static function isPaymentSufficient(int $received, int $expected): bool
+    {
+        if ($received <= 0 || $expected <= 0) {
+            return false;
+        }
+
+        return $received >= $expected;
+    }
+
+    private static function formatCryptoUnits(int $units, string $crypto): string
+    {
+        $decimals = strtoupper($crypto) === 'USDT' ? 6 : 8;
+
+        return rtrim(rtrim(number_format($units / (10 ** $decimals), $decimals, '.', ''), '0'), '.');
+    }
+
+    private static function cleanPaymentIdentifier(string $value): string
+    {
+        return preg_replace('/[^A-Za-z0-9:_-]/', '', $value) ?? '';
     }
 
     /**
@@ -1665,7 +1807,7 @@ HTML;
             // A restart after a stalled payment gets a fresh row; BTC may burn one extra address.
             return null;
         }
-        if ($order->status === null || (int) $order->status < $confirmations) {
+        if ($order->status === null || ((int) $order->status >= 0 && (int) $order->status < $confirmations)) {
             return $order;
         }
 

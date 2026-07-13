@@ -46,15 +46,35 @@ final class BlockonomicsAdapterTest extends TestCase
 
     public function testDeriveCallbackSecretIsDeterministic40CharHex(): void
     {
-        $a = Payment_Adapter_Blockonomics::deriveCallbackSecret('salt-1');
-        $b = Payment_Adapter_Blockonomics::deriveCallbackSecret('salt-1');
-        $c = Payment_Adapter_Blockonomics::deriveCallbackSecret('salt-2');
+        $saltA = '0123456789abcdef0123456789abcdef';
+        $saltB = 'fedcba9876543210fedcba9876543210';
+        $a = Payment_Adapter_Blockonomics::deriveCallbackSecret($saltA);
+        $b = Payment_Adapter_Blockonomics::deriveCallbackSecret($saltA);
+        $c = Payment_Adapter_Blockonomics::deriveCallbackSecret($saltB);
 
         $this->assertSame($a, $b, 'same salt must derive the same secret (constant URL)');
         $this->assertNotSame($a, $c, 'different salts must derive different secrets');
         $this->assertSame(40, strlen($a));
         $this->assertTrue(ctype_xdigit($a));
-        $this->assertSame(substr(hash_hmac('sha256', 'blockonomics:callback', 'salt-1'), 0, 40), $a);
+        $this->assertSame(substr(hash_hmac('sha256', 'blockonomics:callback:v1', $saltA), 0, 40), $a);
+    }
+
+    public function testDeriveCallbackSecretRejectsMissingInstallSalt(): void
+    {
+        $this->expectException(Payment_Exception::class);
+        Payment_Adapter_Blockonomics::deriveCallbackSecret('');
+    }
+
+    public function testCallbackUrlFromConfigIsStableAndPerInstall(): void
+    {
+        \FOSSBilling\Config::$properties['info.salt'] = '0123456789abcdef0123456789abcdef';
+        $first = Payment_Adapter_Blockonomics::getCallbackUrlFromConfig();
+        $this->assertSame($first, Payment_Adapter_Blockonomics::getCallbackUrlFromConfig());
+
+        \FOSSBilling\Config::$properties['info.salt'] = 'fedcba9876543210fedcba9876543210';
+        $this->assertNotSame($first, Payment_Adapter_Blockonomics::getCallbackUrlFromConfig());
+
+        \FOSSBilling\Config::$properties['info.salt'] = '0123456789abcdef0123456789abcdef';
     }
 
     public function testBuildCallbackUrlPointsAtGuestEndpointWithEncodedSecret(): void
@@ -134,6 +154,24 @@ final class BlockonomicsAdapterTest extends TestCase
             'status' => '0',
             'updated_at' => date('Y-m-d H:i:s', time() - 5 * 60 * 60),
         ])));
+        $this->assertFalse(Payment_Adapter_Blockonomics::awaitingConfirmation($this->order(['status' => '-1'])));
+    }
+
+    public function testPaymentSufficiencyRequiresTheFullSmallestUnitAmount(): void
+    {
+        $this->assertTrue(Payment_Adapter_Blockonomics::isPaymentSufficient(100, 100));
+        $this->assertTrue(Payment_Adapter_Blockonomics::isPaymentSufficient(125, 100));
+        $this->assertFalse(Payment_Adapter_Blockonomics::isPaymentSufficient(99, 100));
+        $this->assertFalse(Payment_Adapter_Blockonomics::isPaymentSufficient(0, 100));
+        $this->assertFalse(Payment_Adapter_Blockonomics::isPaymentSufficient(100, 0));
+    }
+
+    public function testRevertedOrderIsTerminalNotPending(): void
+    {
+        $reverted = $this->order(['status' => '-1']);
+        $this->assertTrue(Payment_Adapter_Blockonomics::isRevertedOrder($reverted));
+        $this->assertFalse(Payment_Adapter_Blockonomics::awaitingConfirmation($reverted));
+        $this->assertFalse(Payment_Adapter_Blockonomics::isRevertedOrder($this->order(['status' => '0'])));
     }
 
     public function testIsUnderpaidOrder(): void

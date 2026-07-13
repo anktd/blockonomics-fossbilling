@@ -24,7 +24,7 @@ class Admin extends \FOSSBilling\Api\AbstractApi
         $this->loadAdapterClass();
         $this->defaultPaymentModeOn();
 
-        return ['callback_url' => \Payment_Adapter_Blockonomics::getCallbackUrlFromDi($this->di)];
+        return ['callback_url' => \Payment_Adapter_Blockonomics::getCallbackUrlFromConfig()];
     }
 
     /**
@@ -51,7 +51,7 @@ class Admin extends \FOSSBilling\Api\AbstractApi
         $data = is_array($data) ? $data : [];
         $this->loadAdapterClass();
 
-        $callbackUrl = \Payment_Adapter_Blockonomics::getCallbackUrlFromDi($this->di);
+        $callbackUrl = \Payment_Adapter_Blockonomics::getCallbackUrlFromConfig();
         $gateway = $this->getGateway((int) ($data['gateway_id'] ?? 0));
         $savedConfig = $this->getGatewayConfig($gateway);
         $savedKey = trim((string) ($savedConfig['api_key'] ?? ''));
